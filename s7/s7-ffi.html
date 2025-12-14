@@ -1,0 +1,3691 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<!-- documentation for s7 -->
+
+<head>
+<meta http-equiv="Content-Type" content="text/html;charset=utf-8" >
+
+<title>s7-ffi</title>
+
+<style>
+	EM.red {color:red; font-style:normal}
+	EM.normal {font-style:normal}
+	EM.redb {color:red; font-weight: bold; font-style: normal}
+        EM.error {color:chocolate; font-style:normal}
+	EM.emdef {font-weight: bold; font-style: normal}
+	EM.green {color:green; font-style:normal}
+	EM.gray {color:#505050; font-style:normal}
+	EM.big {font-size: 20px; font-style: normal;}
+	EM.bigger {font-size: 30px; font-style: normal;}
+        EM.def {font-style: normal}
+
+	H1 {text-align: center}
+	UL {list-style-type: none}
+
+	A {text-decoration:none}
+	A:hover {text-decoration:underline}
+
+	A.def {font-weight: bold;
+	       font-style: normal;
+	       text-decoration:none;
+	       }
+
+        PRE.indented {padding-left: 1.0cm;}
+
+	DIV.indented {background-color: #F8F8F0;
+	              padding-left: 0.5cm;
+	              padding-right: 0.5cm;
+		      padding-top: 0.5cm;
+		      padding-bottom: 0.5cm;
+		      margin-bottom: 0.5cm;
+		      border: 1px solid gray;
+		      border-radius: 20px;
+		      -moz-border-radius: 20px;
+		      -webkit-border-radius: 20px;
+		      }
+        DIV.small {font-size: small;
+	              padding-left: 0.5cm;
+	              padding-right: 0.5cm;
+		      padding-bottom: 0.5cm;
+                  }
+        DIV.header {margin-top: 60px;
+	            margin-bottom: 30px;
+	            border: 4px solid #00ff00; /* green */
+		    background-color: #eefdee; /* lightgreen */
+		    padding-left: 30px;
+	           }
+        DIV.shortheader {margin-top: 30px;
+	            margin-bottom: 10px;
+	            border: 4px solid #00ff00; /* green */
+		    background-color: #f5f5dc;
+		    padding-left: 30px;
+		    padding-top: 5px;
+		    padding-bottom: 5px;
+		    width: 20%;
+	           }
+        DIV.topheader {margin-top: 10px;
+	            margin-bottom: 40px;
+	            border: 4px solid #00ff00; /* green */
+		    background-color: #f5f5dc; /* beige */
+		    font-family: 'Helvetica';
+		    font-size: 30px;
+		    text-align: center;
+		    padding-top: 10px;
+		    padding-bottom: 10px;
+	           }
+        DIV.separator {margin-top: 30px;
+	               margin-bottom: 10px;
+	               border: 2px solid #00ff00; /* green */
+		       background-color: #f5f5dc; /* beige */
+		       padding-top: 4px;
+		       width: 30%;
+		      border-radius: 4px;
+		      -moz-border-radius: 4px;
+		      -webkit-border-radius: 4px;
+		      }
+        DIV.smallseparator {margin-top: 10px;
+	               margin-bottom: 10px;
+	               border: 2px solid #00ff00; /* green */
+		       background-color: #f5f5dc; /* beige */
+		       padding-top: 4px;
+		       width: 20%;
+		      border-radius: 4px;
+		      -moz-border-radius: 4px;
+		      -webkit-border-radius: 4px;
+		      text-align: center;
+		      }
+        BODY.body {background-color: #ffffff;    /* white */
+	           margin-right: 20px;
+	           margin-left: 20px;
+                   }
+        DIV.listener {background-color: #f0f8ff;
+	              font-family: 'Monospace';
+		   padding-left: 6px;
+		   padding-right: 6px;
+		   padding-bottom: 4px;
+		   margin-left: 1.0cm;
+		   margin-right: 4.0cm;
+	              border: 2px solid #a0a0a0;
+		      }
+        LI.li_header {padding-top: 20px;}
+
+</style>
+</head>
+<body class="body">
+
+<div class="topheader" id="FFIexamples">FFI examples</div>
+
+  <ul>
+      <li><a href="s7-ffi.html#repl">read-eval-print loop (and emacs)</a>
+      <li><a href="s7-ffi.html#defun">define a function with arguments and a returned value, and define a variable </a>
+      <li><a href="s7-ffi.html#defvar">call a Scheme function from C, and get/set Scheme variable values in C</a>
+      <li><a href="s7-ffi.html#juce">C++ and Juce</a>
+      <li><a href="s7-ffi.html#sndlib">load sndlib using the Xen functions and macros</a>
+      <li><a href="s7-ffi.html#pwstype">add a new Scheme type and a procedure with a setter</a>
+      <li><a href="s7-ffi.html#functionportexample">redirect display output to a C procedure</a>
+      <li><a href="s7-ffi.html#extendop">extend a built-in operator ("+" in this case)</a>
+      <li><a href="s7-ffi.html#definestar1">C-side define* (s7_define_function_star)</a>
+      <li><a href="s7-ffi.html#definemacro1">C-side define-macro (s7_define_macro)</a>
+      <li><a href="s7-ffi.html#definegeneric">define a generic function in C</a>
+      <li><a href="s7-ffi.html#signal">signal handling (C-C to break out of an infinite loop)</a>
+      <li><a href="s7-ffi.html#notify">notification in C that a Scheme variable has been set!</a>
+      <li><a href="s7-ffi.html#namespace">Load C defined stuff into a separate namespace</a>
+      <li><a href="s7-ffi.html#Cerrors">Error handling in C</a>
+      <li><a href="s7-ffi.html#testhook">Hooks in C and Scheme</a>
+      <li><a href="s7-ffi.html#dload">Load a C module dynamically</a>
+      <li><a href="s7-ffi.html#gmpex">gmp and friends</a>
+      <li><a href="s7-ffi.html#gdb">gdb</a>
+      <li><a href="s7-ffi.html#webassembly">WASM</a>
+      <li><a href="s7-ffi.html#ffinotes">FFI notes</a>
+  </ul>
+
+
+<p>s7 exists only to serve as an extension of some other application, so
+it is primarily a foreign function interface.  s7.h has lots of comments about the individual
+functions.  Here I'll collect some complete examples.  s7.c depends on the following
+compile-time flags:
+</p>
+
+<pre class="indented">
+SIZEOF_VOID_P                  8 (default) or 4.
+WITH_GMP                       1 if you want multiprecision arithmetic (requires gmp, mpfr, and mpc, default is 0)
+HAVE_COMPLEX_NUMBERS           1 if your compiler supports complex numbers
+HAVE_COMPLEX_TRIG              1 if your math library has complex versions of the trig functions
+DISABLE_DEPRECATED             1 if you want to make sure you're not using any deprecated s7 stuff (default is 0)
+
+WITH_IMMUTATBLE_UNQUOTE        1 if you want "unquote" omitted (default is 0)
+WITH_EXTRA_EXPONENT_MARKERS    1 if you want "d", "f", "l", and "s" in addition to "e" as exponent markers (default is 0)
+                                   if someone defends these exponent markers, ask him to read 1l11+11l1i
+                                   (in 2 million lines of open-source Scheme, there is not one use of these silly things)
+WITH_SYSTEM_EXTRAS             1 if you want some additional OS-related functions built-in (default is 0)
+WITH_MAIN                      1 if you want s7.c to include a main program section that runs a REPL.
+WITH_C_LOADER		       1 if you want to be able to load shared object files with load.
+WITH_R7RS                      1 if you want r7rs support built-in; otherwise you need to build/load libc_s7.so and load r7rs.scm.
+WITH_NOTCURSES                 1 is you want a decent repl (based on notcurses) built-in.
+</pre>
+
+<p>See the comment at the start of s7.c for more information about these switches.
+s7.h defines the two main number types: s7_int and s7_double.
+The examples that follow show:
+</p>
+
+<ul>
+<li><a href="#repl">read-eval-print loop (and emacs)</a>
+<li><a href="#defun">define a function with arguments and a returned value, and define a variable </a>
+<li><a href="#defvar">call a Scheme function from C, and get/set Scheme variable values in C</a>
+<li><a href="#juce">C++ and Juce</a>
+<li><a href="#sndlib">load sndlib using the Xen functions and macros</a>
+<li><a href="#pwstype">add a new Scheme type and a procedure with a setter</a>
+<li><a href="#functionportexample">redirect display output to a C procedure</a>
+<li><a href="#extendop">extend a built-in operator ("+" in this case)</a>
+<li><a href="#definestar1">C-side define* (s7_define_function_star)</a>
+<li><a href="#definemacro1">C-side define-macro (s7_define_macro)</a>
+<li><a href="#definegeneric">define a generic function in C</a>
+<li><a href="#signal">signal handling (C-C to break out of an infinite loop)</a>
+<li><a href="#notify">notification in C that a Scheme variable has been set!</a>
+<li><a href="#namespace">Load C defined stuff into a separate namespace</a>
+<li><a href="#Cerrors">Error handling in C</a>
+<li><a href="#testhook">Hooks in C and Scheme</a>
+<li><a href="#dload">Load a C module dynamically</a>
+<li><a href="#gmpex">gmp and friends</a>
+<li><a href="#gdb">gdb</a>
+<li><a href="#webassembly">WASM</a>
+</ul>
+
+
+
+
+<div class="header" id="repl"><h4>A simple listener</h4></div>
+
+
+<div class="indented">
+<pre>
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include "s7.h"
+
+int main(int argc, char **argv)
+{
+  s7_scheme *s7 = <em class=red>s7_init</em>();      /* initialize the interpreter */
+  while (1)                       /* fire up a read-eval-print loop */
+    {
+      char buffer[512];
+      fprintf(stdout, "\n&gt; ");    /* prompt for input */
+      fgets(buffer, 512, stdin);
+      if ((buffer[0] != '\n') ||
+	  (strlen(buffer) &gt; 1))
+	{                         /* evaluate the input and print the result */
+          char response[1024];
+	  snprintf(response, 1024, "(write %s)", buffer);
+	  <em class=red>s7_eval_c_string</em>(s7, response);
+	}}
+}
+
+/* if not using gcc or clang, make mus-config.h (it can be empty)
+ *
+ * gcc -c s7.c -I.
+ * gcc -o repl repl.c s7.o -lm -I. -ldl
+ *
+ * run it:
+ *
+ *    repl
+ *    &gt; (+ 1 2)
+ *    <em class="gray">3</em>
+ *    &gt; (define (add1 x) (+ 1 x))
+ *    <em class="gray">add1</em>
+ *    &gt; (add1 2)
+ *    <em class="gray">3</em>
+ *    &gt; (exit)
+ *
+ * for long-term happiness in linux use:
+ *   gcc -o repl repl.c s7.o -Wl,-export-dynamic -lm -I. -ldl
+ *   clang also needs -fPIC I think
+ * freebsd:
+ *   gcc -o repl repl.c s7.o -Wl,-export-dynamic -lm -I.
+ * osx:
+ *   gcc -o repl repl.c s7.o -lm -I.
+ * openbsd:
+ *   clang -o repl repl.c s7.o -I. -fPIC -Wl,-export-dynamic -lm
+ */
+</pre>
+</div>
+
+
+<p>Since this reads stdin and writes stdout, it can be run as a Scheme subjob of emacs.
+One (inconvenient) way to do this is to set the emacs variable scheme-program-name to
+the name of the exectuable created above ("repl"), then call the emacs function run-scheme:
+M-x eval-expression in emacs, followed by (setq scheme-program-name "repl"), then
+M-x run-scheme, and you're talking to s7 in emacs.  Of course, this connection can be
+customized indefinitely.  See, for example, inf-snd.el in the Snd package.
+</p>
+
+<p>Here are the not-always-built-in indentations I use in emacs:
+</p>
+<pre class="indented">
+(put 'with-let 'scheme-indent-function 1)
+(put 'with-baffle 'scheme-indent-function 0)
+(put 'with-sound 'scheme-indent-function 1)
+(put 'catch 'scheme-indent-function 1)
+(put 'lambda* 'scheme-indent-function 1)
+(put 'when 'scheme-indent-function 1)
+(put 'let-temporarily 'scheme-indent-function 1)
+(put 'let*-temporarily 'scheme-indent-function 1)
+(put 'call-with-input-string 'scheme-indent-function 1)
+(put 'unless 'scheme-indent-function 1)
+(put 'letrec* 'scheme-indent-function 1)
+(put 'sublet 'scheme-indent-function 1)
+(put 'varlet 'scheme-indent-function 1)
+(put 'case* 'scheme-indent-function 1)
+(put 'macro 'scheme-indent-function 1)
+(put 'macro* 'scheme-indent-function 1)
+(put 'bacro 'scheme-indent-function 1)
+(put 'bacro* 'scheme-indent-function 1)
+</pre>
+
+<p>To read stdin while working in a GUI-based program is trickier.  In glib, you can use
+something like this:
+</p>
+
+<blockquote>
+<div class="indented">
+<pre>
+static gboolean read_stdin(GIOChannel *source, GIOCondition condition, gpointer data)
+{
+  /* here read from g_io_channel_unix_get_fd(source) and call s7_eval_string */
+  return(true);
+}
+
+/* ... during initialization ... */
+
+GIOChannel *channel;
+channel = g_io_channel_unix_new(STDIN_FILENO);  /* watch stdin */
+stdin_id = g_io_add_watch_full(channel,         /* and call read_stdin above if input is noticed */
+			       G_PRIORITY_DEFAULT,
+			       (GIOCondition)(G_IO_IN | G_IO_HUP | G_IO_ERR),
+			       <em class=red>read_stdin</em>, NULL, NULL);
+g_io_channel_unref(channel);
+</pre></div>
+</blockquote>
+
+
+<p>Here's a version that uses libtecla for the line editor:
+</p>
+
+<blockquote>
+<div class="indented">
+<pre>
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include &lt;libtecla.h&gt;
+#include "s7.h"
+
+int main(int argc, char **argv)
+{
+  GetLine *gl = new_GetLine(500, 5000); /* The tecla line editor */
+  s7_scheme *s7 = s7_init();
+  while (1)
+    {
+      char *buffer;
+      buffer = gl_get_line(gl, "&gt; ", NULL, 0);
+      if ((buffer[0] != '\n') ||
+	  (strlen(buffer) &gt; 1))
+	{
+          char response[1024];
+	  snprintf(response, 1024, "(write %s)", buffer);
+	  s7_eval_c_string(s7, response);
+	  fprintf(stdout, "\n");
+	}}
+  gl = del_GetLine(gl);
+}
+
+/*
+ *   gcc -c s7.c -I. -O2 -g3
+ *   gcc -o ex1 ex1.c s7.o -lm -I. -ltecla -ldl
+ */
+</pre></div>
+</blockquote>
+
+
+<p>A repl (based on repl.scm or nrepl.scm) is built into s7.  Include the compiler flag -DWITH_MAIN:
+</p>
+
+<pre class="indented">
+gcc -o nrepl s7.c -O2 -I. -Wl,-export-dynamic -lm -ldl -DWITH_MAIN -DWITH_NOTCURSES -lnotcurses-core
+</pre>
+
+
+<p id="beginhook">
+Common Lisp has something called "evalhook" that makes it possible
+to insert your own function into the eval loop.  In s7, we have a "begin_hook" which sits at the opening of many begin blocks
+(implicit or explicit).  begin_hook is a (C) function;
+if it sets its bool argument to true,
+s7 interrupts the current evaluation.
+Here is a version of the REPL in which begin_hook watches for C-g to interrupt
+some long computation:
+</p>
+
+<blockquote>
+<div class="indented">
+<pre>
+/* terminal-based REPL,
+ *    an expansion of the <a href="#repl">read-eval-print loop</a> program above.
+ * type C-g to interrupt an evaluation.
+ */
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include &lt;termios.h&gt;
+#include &lt;signal.h&gt;
+
+#include "s7.h"
+
+static struct termios save_buf, buf;
+
+static void sigcatch(int n)
+{
+  /* put things back the way they were */
+  tcsetattr(fileno(stdin), TCSAFLUSH, &amp;save_buf);
+  exit(0);
+}
+
+static char buffer[512];
+static int type_ahead_point = 0;
+
+static void <em class=red>watch_for_c_g</em>(s7_scheme *sc, bool *all_done)
+{
+  char c;
+  /* watch for C-g without blocking, save other chars as type-ahead */
+  tcsetattr(fileno(stdin), TCSAFLUSH, &amp;buf);
+  if (read(fileno(stdin), &amp;c, 1) == 1)
+    {
+      if (c == 7) /* C-g */
+	{
+	  *all_done = true;
+	  type_ahead_point = 0;
+	}
+      else buffer[type_ahead_point++] = c;
+    }
+  tcsetattr(fileno(stdin), TCSAFLUSH, &amp;save_buf);
+}
+
+int main(int argc, char **argv)
+{
+  s7_scheme *s7;
+  bool use_begin_hook = (tcgetattr(fileno(stdin), &amp;save_buf) &gt;= 0);
+  if (use_begin_hook)
+    {
+      buf = save_buf;
+      buf.c_lflag &amp;= ~ICANON;
+      buf.c_cc[VMIN] = 0;
+      buf.c_cc[VTIME] = 0;
+
+      signal(SIGINT, sigcatch);
+      signal(SIGQUIT, sigcatch);
+      signal(SIGTERM, sigcatch);
+    }
+  s7 = s7_init();
+
+  if (argc == 2)
+    {
+      fprintf(stderr, "load %s\n", argv[1]);
+      if (!s7_load(s7, argv[1]))
+        fprintf(stderr, "can't find %s\n", argv[1]);
+    }
+  else
+    {
+      while (1)
+	{
+	  fprintf(stdout, "\n&gt; ");
+	  fgets((char *)(buffer + type_ahead_point), 512 - type_ahead_point, stdin);
+	  type_ahead_point = 0;
+
+	  if ((buffer[0] != '\n') ||
+	      (strlen(buffer) &gt; 1))
+	    {
+              char response[1024];
+	      snprintf(response, 1024, "(write %s)", buffer);
+
+	      if (use_begin_hook)
+		<em class=red>s7_set_begin_hook</em>(s7, watch_for_c_g);
+	      s7_eval_c_string(s7, response);
+	      if (use_begin_hook)
+		<em class=red>s7_set_begin_hook</em>(s7, NULL);
+	    }}}
+  if (use_begin_hook)
+    tcsetattr(fileno(stdin), TCSAFLUSH, &amp;save_buf);
+}
+</pre></div>
+</blockquote>
+
+
+
+
+<div class="header" id="defun"><h4>Define a function with arguments and a returned value, and a variable</h4></div>
+
+
+<div class="indented">
+<pre>
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+
+#include "s7.h"
+
+static s7_pointer add1(s7_scheme *sc, s7_pointer args)
+{
+  /* all added functions have this form, args is a list,
+   *    s7_car(args) is the first arg, etc
+   */
+  if (<em class=red>s7_is_integer</em>(s7_car(args)))
+    return(<em class=red>s7_make_integer</em>(sc, 1 + <em class=red>s7_integer</em>(s7_car(args))));
+  return(s7_wrong_type_arg_error(sc, "add1", 1, s7_car(args), "an integer"));
+}
+
+int main(int argc, char **argv)
+{
+  s7_scheme *s7 = s7_init();
+  s7_define_function(s7, "add1", add1, 1, 0, false, "(add1 int) adds 1 to int");
+                                      /* add the function "add1" to the interpreter.
+                                       *   1, 0, false -&gt; one required arg,
+				       *                  no optional args,
+				       *                  no "rest" arg
+				       */
+ <em class=red>s7_define_variable</em>(s7, "my-pi", <em class=red>s7_make_real</em>(s7, 3.14159265));
+
+  while (1)                           /* fire up a "repl" */
+    {
+      char buffer[512];
+      fprintf(stdout, "\n&gt; ");        /* prompt for input */
+      fgets(buffer, 512, stdin);
+      if ((buffer[0] != '\n') ||
+	  (strlen(buffer) &gt; 1))
+	{
+          char response[1024];
+	  snprintf(response, 1024, "(write %s)", buffer);
+	  s7_eval_c_string(s7, response); /* evaluate input and write the result */
+	}}
+}
+
+/*    doc7
+ *    &gt; my-pi
+ *    <em class="gray">3.14159265</em>
+ *    &gt; (+ 1 (add1 1))
+ *    <em class="gray">3</em>
+ *    &gt; (exit)
+ */
+</pre></div>
+
+
+
+
+<div class="header" id="defvar"><h4>Call a Scheme-defined function from C, and get/set Scheme variable values in C</h4></div>
+
+
+<div class="indented">
+<pre>
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+
+#include "s7.h"
+
+int main(int argc, char **argv)
+{
+  s7_scheme *s7 = s7_init();
+
+  s7_define_variable(s7, "an-integer", s7_make_integer(s7, 1));
+  s7_eval_c_string(s7, "(define (add1 a) (+ a 1))");
+
+  fprintf(stderr, "an-integer: %lld\n",
+	  s7_integer(<em class=red>s7_name_to_value</em>(s7, "an-integer")));
+
+  <em class=red>s7_symbol_set_value</em>(s7, <em class=red>s7_make_symbol</em>(s7, "an-integer"), s7_make_integer(s7, 32));
+
+  fprintf(stderr, "now an-integer: %lld\n",
+	  s7_integer(<em class=red>s7_name_to_value</em>(s7, "an-integer")));
+
+  fprintf(stderr, "(add1 2): %lld\n",
+	  s7_integer(<em class=red>s7_call</em>(s7,
+			     s7_name_to_value(s7, "add1"),
+			     s7_cons(s7, s7_make_integer(s7, 2), s7_nil(s7)))));
+}
+
+/*
+ *    doc7
+ *    an-integer: 1
+ *    now an-integer: 32
+ *    (add1 2): 3
+ */
+</pre>
+
+<p>In more complicated cases, it is probably easier use s7_eval_c_string_with_environment.
+As an example, say we want to have a C procedure that calls the pretty printer function pp
+in write.scm, returning a string to C.  We need to make sure pp is loaded, and catch
+any errors that come up.  And we need to pass the C-level s7 object to pp.  So...
+</p>
+<pre>
+static const char *pp(s7_scheme *sc, s7_pointer obj) /* (pp obj) */
+{
+  return(s7_string(
+          <em class=red>s7_eval_c_string_with_environment</em>(sc,
+            "(catch #t                         \
+               (lambda ()                      \
+                 (unless (defined? 'pp)        \
+                   (load \"write.scm\"))       \
+                 (<em class=red>pp</em> obj))                     \
+               (lambda (type info)             \
+                 (apply format #f info)))",
+	   <em class=red>s7_inlet</em>(sc, s7_list(sc, 1, s7_cons(sc, s7_make_symbol(sc, "obj"), obj))))));
+}
+</pre>
+<p>and now when we want a pretty-printed representation of something: pp(sc, obj);
+The s7_inlet call is creating a local environment with the object "obj" bound
+in scheme to the name "obj" so that (pp obj) will find the "obj" that actually
+lives in C.  You may need to give the full filename for write.scm, or add its path
+to the <a href="s7.html#loadpath">load-path list</a>.  In the latter case, <code>(require write.scm)</code> could
+replace <code>(unless (defined?...))</code>.
+</p>
+</div>
+
+
+
+<div class="header" id="juce"><h4>C++ and Juce, from Rick Taube</h4></div>
+
+
+<div class="indented">
+<pre>
+int main(int argc, const char* argv[])
+{
+  initialiseJuce_NonGUI();
+
+  s7_scheme *s7 = s7_init();
+  if (!s7)
+    {
+      std::cout &lt;&lt;  "Can't start S7!\n";
+      return -1;
+    }
+
+  while (true)
+    {
+      s7_pointer val;
+      std::string str;
+      std::cout &lt;&lt; "\ns7&gt; ";
+      std::getline(std::cin, str);
+      val = s7_eval_c_string(s7, str.c_str());
+      std::cout &lt;&lt; s7_object_to_c_string(s7, val);
+    }
+
+  free(s7);
+  std::cout &lt;&lt; "Bye!\n";
+  return 0;
+}
+</pre></div>
+
+
+
+
+
+<div class="header" id="sndlib"><h4>Load sndlib into an s7 repl</h4></div>
+
+
+<div class="indented">
+<pre>
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include &lt;unistd.h&gt;
+
+/* assume we've configured and built sndlib, so it has created a mus-config.h file.
+ * also assume we've built s7 with WITH_SYSTEM_EXTRAS set, so we have file-exists? and delete-file
+ */
+
+#include "mus-config.h"
+#include "s7.h"
+#include "xen.h"
+#include "clm.h"
+#include "clm2xen.h"
+
+/* we need to redirect clm's mus_error calls to s7_error */
+
+static void mus_error_to_s7(int type, char *msg)
+{
+  s7_error(s7,                               /* s7 is declared in xen.h, defined in xen.c */
+	   s7_make_symbol(s7, "mus-error"),
+	   s7_cons(s7, s7_make_string(s7, msg), s7_nil(s7)));
+}
+
+int main(int argc, char **argv)
+{
+  s7 = s7_init();                     /* initialize the interpreter */
+  s7_xen_initialize(s7);              /* initialize the xen stuff (hooks and the xen s7 FFI used by sndlib) */
+  Init_sndlib();                      /* initialize sndlib with all the functions linked into s7 */
+
+  mus_error_set_handler(mus_error_to_s7); /* catch low-level errors and pass them to s7-error */
+
+  while (1)                           /* fire up a "repl" */
+    {
+      char buffer[512];
+      fprintf(stdout, "\n&gt; ");        /* prompt for input */
+      fgets(buffer, 512, stdin);
+      if ((buffer[0] != '\n') ||
+	  (strlen(buffer) &gt; 1))
+	{
+          char response[1024];
+	  snprintf(response, 1024, "(write %s)", buffer);
+	  s7_eval_c_string(s7, response); /* evaluate input and write the result */
+	}}
+}
+
+/* gcc -o doc7 doc7.c -lm -I. /usr/local/lib/libsndlib.a -lasound -ldl
+ *
+ *   (load "sndlib-ws.scm")
+ *   (with-sound () (outa 10 .1))
+ *   (load "v.scm")
+ *   (with-sound () (fm-violin 0 .1 440 .1))
+ *
+ * you might also need -lgsl -lgslcblas -lfftw3
+ */
+</pre>
+</div>
+
+<p>If you built libsndlib.so, it is possible to use it directly in the s7 repl:
+</p>
+<pre>
+repl          ; this is a bare s7 running repl.scm via -DWITH_MAIN=1
+loading libc_s7.so
+&gt; (load "/home/bil/test/sndlib/libsndlib.so" (inlet 'init_func 's7_init_sndlib))
+#t            ; s7_init_sndlib ties all the sndlib functions and variables into s7
+&gt; (load "sndlib-ws.scm")
+tmpnam
+&gt; (set! *clm-player* (lambda (file) (system (format #f "sndplay ~A" file))))
+&gt; (load "v.scm")
+fm-violin
+&gt; (with-sound (:play #t) (fm-violin 0 1 440 .1))
+"test.snd"
+</pre>
+
+<p>You can use autoload to load libsndlib when needed:
+</p>
+
+<pre class="indented">
+(define (find-library name)
+  (if (or (file-exists? name)
+	  (char=? (name 0) #\/))
+      name
+      (call-with-exit
+       (lambda (return)
+	 (for-each
+	  (lambda (path)
+	    (let ((new-name (string-append path "/" name)))
+	      (if (file-exists? new-name)
+		  (return new-name))))
+	  *load-path*)
+	 (let ((libs (getenv "LD_LIBRARY_PATH")) ; colon separated directory names
+	       (start 0))
+	   (do ((colon (char-position #\: libs) (char-position #\: libs start)))
+	       ((or (not colon)
+		    (let ((new-name (string-append (substring libs start colon) "/" name)))
+		      (and (file-exists? new-name)
+			   (return new-name)))))
+	     (set! start (+ colon 1))))
+	 name))))
+
+(<em class=red>autoload</em> 'clm
+  (lambda (e)
+    (load (find-library "libsndlib.so") (inlet '(init_func . s7_init_sndlib)))
+    (set! *features* (cons 'clm *features*))
+    (with-let (rootlet) (define clm #t))
+    (load "sndlib-ws.scm")
+    (set! *clm-player* (lambda (file) (system (format #f "sndplay ~A" file))))))
+</pre>
+
+<p>and use the repl's vt100 stuff to (for example) post the current begin time
+as a note list computes:
+</p>
+
+<pre class="indented">
+(define (clm-notehook . args)
+  ;; assume second arg is begin time (first is instrument name)
+  (when (and (pair? args)
+	     (pair? (cdr args))
+	     (number? (cadr args)))
+    (with-let (sublet (*repl* 'repl-let) :begin-time (cadr args))
+      (let ((coords (cursor-coords))
+	    (col (floor (/ last-col 2))))
+	(let ((str (number-&gt;string begin-time)))
+	  (format *stderr* "~C[~D;~DH" #\escape prompt-row col)
+	  (format *stderr* "~C[K~A"  #\escape (if (&gt; (length str) col) (substring str 0 (- col 1)) str)))
+	(format *stderr* "~C[~D;~DH"   #\escape (cdr coords) (car coords))))))
+
+(set! *clm-notehook* clm-notehook)
+</pre>
+
+
+
+
+
+<div class="header" id="pwstype"><h4>Add a new Scheme type and a procedure with a setter</h4></div>
+
+
+<div class="indented">
+<pre>
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+
+#include "s7.h"
+
+/* define *listener-prompt* in scheme, add two accessors for C get/set */
+
+static const char *listener_prompt(s7_scheme *sc)
+{
+  return(s7_string(s7_name_to_value(sc, "*listener-prompt*")));
+}
+
+static void set_listener_prompt(s7_scheme *sc, const char *new_prompt)
+{
+  s7_symbol_set_value(sc, s7_make_symbol(sc, "*listener-prompt*"), s7_make_string(sc, new_prompt));
+}
+
+/* now add a new type, a struct named "dax" with two fields, a real "x" and a list "data" */
+/*   since the data field is an s7 object, we'll need to mark it to protect it from the GC */
+
+typedef struct {
+  s7_double x;
+  s7_pointer data;
+} dax;
+
+static int dax_type_tag = 0;
+
+static s7_pointer dax_to_string(s7_scheme *sc, s7_pointer args)
+{
+  s7_pointer result;
+  dax *o = (dax *)s7_c_object_value(s7_car(args));
+  char *data_str = s7_object_to_c_string(sc, o-&gt;data);
+  int data_str_len = strlen(data_str);
+  char *str = (char *)calloc(data_str_len + 32, sizeof(char));
+  snprintf(str, data_str_len + 32, "&lt;dax %.3f %s&gt;", o-&gt;x, data_str);
+  free(data_str);
+  result = s7_make_string(sc, str);
+  free(str);
+  return(result);
+}
+
+static s7_pointer free_dax(s7_scheme *sc, s7_pointer obj)
+{
+  free(s7_c_object_value(obj));
+  return(NULL);
+}
+
+static s7_pointer mark_dax(s7_scheme *sc, s7_pointer obj)
+{
+  dax *o = (dax *)s7_c_object_value(obj);
+  s7_mark(o-&gt;data);
+  return(NULL);
+}
+
+static s7_pointer make_dax(s7_scheme *sc, s7_pointer args)
+{
+  dax *o = (dax *)malloc(sizeof(dax));
+  o-&gt;x = s7_real(s7_car(args));
+  if (s7_cdr(args) != s7_nil(sc))
+    o-&gt;data = s7_cadr(args);
+  else o-&gt;data = s7_nil(sc);
+  return(<em class=red>s7_make_c_object</em>(sc, dax_type_tag, (void *)o));
+}
+
+static s7_pointer is_dax(s7_scheme *sc, s7_pointer args)
+{
+  return(s7_make_boolean(sc,
+			 <em class=red>s7_is_c_object</em>(s7_car(args)) &amp;&amp;
+			 <em class=red>s7_c_object_type</em>(s7_car(args)) == dax_type_tag));
+}
+
+static s7_pointer dax_x(s7_scheme *sc, s7_pointer args)
+{
+  dax *o = (dax *)<em class=red>s7_c_object_value</em>(s7_car(args));
+  return(s7_make_real(sc, o-&gt;x));
+}
+
+static s7_pointer set_dax_x(s7_scheme *sc, s7_pointer args)
+{
+  dax *o = (dax *)s7_c_object_value(s7_car(args));
+  o-&gt;x = s7_real(s7_cadr(args));
+  return(s7_cadr(args));
+}
+
+static s7_pointer dax_data(s7_scheme *sc, s7_pointer args)
+{
+  dax *o = (dax *)s7_c_object_value(s7_car(args));
+  return(o-&gt;data);
+}
+
+static s7_pointer set_dax_data(s7_scheme *sc, s7_pointer args)
+{
+  dax *o = (dax *)s7_c_object_value(s7_car(args));
+  o-&gt;data = s7_cadr(args);
+  return(o-&gt;data);
+}
+
+static s7_pointer dax_is_equal(s7_scheme *sc, s7_pointer args)
+{
+  dax *d1, *d2;
+  s7_pointer p1 = s7_car(args);
+  s7_pointer p2 = s7_cadr(args);
+  if (p1 == p2)
+    return(s7_t(sc));
+  if ((!s7_is_c_object(p2)) ||
+      (s7_c_object_type(p2) != dax_type_tag))
+    return(s7_f(sc));
+  d1 = (dax *)s7_c_object_value(p1);
+  d2 = (dax *)s7_c_object_value(p2);
+  return(s7_make_boolean(sc,
+			 (d1-&gt;x == d2-&gt;x) &amp;&amp;
+			 (s7_is_equal(sc, d1-&gt;data, d2-&gt;data))));
+}
+
+int main(int argc, char **argv)
+{
+  s7_scheme *s7 = s7_init();
+  s7_define_variable(s7, "*listener-prompt*", s7_make_string(s7, "&gt;"));
+
+  dax_type_tag = <em class=red>s7_make_c_type</em>(s7, "dax");
+  s7_c_type_set_gc_free(s7, dax_type_tag, free_dax);
+  s7_c_type_set_gc_mark(s7, dax_type_tag, mark_dax);
+  s7_c_type_set_is_equal(s7, dax_type_tag, dax_is_equal);
+  s7_c_type_set_to_string(s7, dax_type_tag, dax_to_string);
+
+  s7_define_function(s7, "make-dax", make_dax, 2, 0, false, "(make-dax x data) makes a new dax");
+  s7_define_function(s7, "dax?", is_dax, 1, 0, false, "(dax? anything) returns #t if its argument is a dax object");
+
+  s7_define_variable(s7, "dax-x",
+                     <em class=red>s7_dilambda</em>(s7, "dax-x", dax_x, 1, 0, set_dax_x, 2, 0, "dax x field"));
+
+  s7_define_variable(s7, "dax-data",
+                     <em class=red>s7_dilambda</em>(s7, "dax-data", dax_data, 1, 0, set_dax_data, 2, 0, "dax data field"));
+
+  while (1)
+    {
+      char buffer[512];
+      fprintf(stdout, "\n%s ", listener_prompt(s7));
+      fgets(buffer, 512, stdin);
+      if ((buffer[0] != '\n') ||
+	  (strlen(buffer) &gt; 1))
+	{
+          char response[1024];
+	  snprintf(response, 1024, "(write %s)", buffer);
+	  s7_eval_c_string(s7, response); /* evaluate input and write the result */
+	}}
+}
+
+/* (in Linux);
+ *    gcc dax.c -o dax -I. -O2 -g s7.o -ldl -lm -Wl,-export-dynamic -Wno-stringop-overflow
+ *    dax
+ *    &gt; *listener-prompt*
+ *    <em class="gray">"&gt;"</em>
+ *    &gt; (set! *listener-prompt* ":")
+ *    <em class="gray">":"</em>
+ *    : (define obj (make-dax 1.0 (list 1 2 3)))
+ *    <em class="gray">obj</em>
+ *    : obj
+ *    <em class="gray">#&lt;dax 1.000 (1 2 3)&gt;</em>
+ *    : (dax-x obj)
+ *    <em class="gray">1.0</em>
+ *    : (dax-data obj)
+ *    <em class="gray">(1 2 3)</em>
+ *    : (set! (dax-x obj) 123.0)
+ *    <em class="gray">123.0</em>
+ *    : obj
+ *    <em class="gray">#&lt;dax 123.000 (1 2 3)&gt;</em>
+ *    : (dax? obj)
+ *    <em class="gray">#t</em>
+ *    : (exit)
+ */
+</pre></div>
+
+
+
+
+
+<div class="header" id="functionportexample"><h4>Redirect output (and input) to a C procedure</h4></div>
+
+
+<div class="indented">
+<pre>
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+
+#include "s7.h"
+
+static void my_print(s7_scheme *sc, uint8_t c, s7_pointer port)
+{
+  fprintf(stderr, "[%c] ", c);
+}
+
+static s7_pointer my_read(s7_scheme *sc, s7_read_t peek, s7_pointer port)
+{
+  return(<em class=red>s7_make_character</em>(sc, fgetc(stdin)));
+}
+
+int main(int argc, char **argv)
+{
+  s7_scheme *s7 = s7_init();
+
+  <em class=red>s7_set_current_output_port</em>(s7, <em class=red>s7_open_output_function</em>(s7, my_print));
+  s7_define_variable(s7, "io-port", <em class=red>s7_open_input_function</em>(s7, my_read));
+
+  while (1)
+    {
+      char buffer[512];
+      fprintf(stdout, "\n&gt; ");
+      fgets(buffer, 512, stdin);
+      if ((buffer[0] != '\n') ||
+	  (strlen(buffer) &gt; 1))
+	{
+          char response[1024];
+	  snprintf(response, 1024, "(write %s)", buffer);
+	  s7_eval_c_string(s7, response);
+	}}
+}
+
+/*
+ *    &gt; (+ 1 2)
+ *    <em class="gray">[3]</em>
+ *    &gt; (display "hiho")
+ *    <em class="gray">[h] [i] [h] [o] [#] [&lt;] [u] [n] [s] [p] [e] [c] [i] [f] [i] [e] [d] [&gt;] </em>
+ *    &gt; (define (add1 x) (+ 1 x))
+ *    <em class="gray">[a] [d] [d] [1] </em>
+ *    &gt; (add1 123)
+ *    <em class="gray">[1] [2] [4] </em>
+ *    &gt; (read-char io-port)
+ *    a                             ; here I typed "a" in the shell
+ *    <em class="gray">[#] [\] [a] </em>
+ */
+</pre>
+</div>
+
+<p>In Snd, we want debug.scm (*debug-port*) output to go to the Snd listener text widget.  The Snd function listener_append
+adds a string to that widget's text, so we define:
+</p>
+<pre class="indented">
+static void (listener_write)(s7_scheme *sc, uint8_t c, s7_pointer port)
+{
+  char buf[2];
+  buf[0] = c;
+  buf[1] = '\0';
+  listener_append(buf);
+}
+</pre>
+<p>
+Then we define a Scheme-side variable, *listener-port*, to be a function port:
+</p>
+<pre class="indented">
+s7_define_variable_with_documentation(s7, "*listener-port*",
+  s7_open_output_function(s7, listener_write), "port to write to Snd's listener");
+</pre>
+<p>
+And tie it into *debug-port* via
+<code>(set! ((funclet trace-in) '*debug-port*) *listener-port*)</code>.
+</p>
+
+
+
+
+<div class="header" id="extendop"><h4>Extend a built-in operator ("+" in this case)</h4></div>
+
+<p>There are several ways to do this.  In the first example, we save the original function,
+and replace it with ours, calling the original whenever possible:
+</p>
+
+<div class="indented">
+<pre>
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+
+#include "s7.h"
+
+static s7_pointer old_add;           /* the original "+" function for non-string cases */
+static s7_pointer old_string_append; /* same, for "string-append" */
+
+static s7_pointer our_add(s7_scheme *sc, s7_pointer args)
+{
+  /* this will replace the built-in "+" operator, extending it to include strings:
+   *   (+ "hi" "ho") -&gt; "hiho" and  (+ 3 4) -&gt; 7
+   */
+  if ((s7_is_pair(args)) &amp;&amp;
+      (s7_is_string(s7_car(args))))
+    return(<em class=red>s7_apply_function</em>(sc, old_string_append, args));
+  return(s7_apply_function(sc, old_add, args));
+}
+
+int main(int argc, char **argv)
+{
+  s7_scheme *s7 = s7_init();
+
+  /* get built-in + and string-append */
+  old_add = s7_name_to_value(s7, "+");
+  old_string_append = s7_name_to_value(s7, "string-append");
+
+  /* redefine "+" */
+  s7_define_function(s7, "+", our_add, 0, 0, true, "(+ ...) adds or appends its arguments");
+
+  while (1)
+    {
+      char buffer[512];
+      fprintf(stdout, "\n&gt; ");
+      fgets(buffer, 512, stdin);
+      if ((buffer[0] != '\n') ||
+	  (strlen(buffer) &gt; 1))
+	{
+          char response[1024];
+	  snprintf(response, 1024, "(write %s)", buffer);
+	  s7_eval_c_string(s7, response);
+	}}
+}
+
+/*    &gt; (+ 1 2)
+ *    <em class="gray">3</em>
+ *    &gt; (+ "hi" "ho")
+ *    <em class="gray">"hiho"</em>
+ */
+</pre></div>
+
+<p>In the next example, we use the method (inlet) machinery:
+</p>
+
+<div class="indented">
+<pre>
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include &lt;math.h&gt;
+
+#include "s7.h"
+
+static s7_pointer our_abs(s7_scheme *sc, s7_pointer args)
+{
+  s7_pointer x = s7_car(args);
+  if (!s7_is_number(x))
+    {
+      s7_pointer method = <em class=red>s7_method</em>(sc, x, s7_make_symbol(sc, "abs"));
+      if (method == s7_undefined(sc))                       /* no method found, so raise an error */
+	s7_wrong_type_arg_error(sc, "abs", 1, x, "a real");
+      return(s7_apply_function(sc, method, args));          /*   else apply the method to the args */
+    }
+  return(s7_make_real(sc, 2.0 * (s7_double)fabs(s7_number_to_real(sc, x))));
+}
+
+int main(int argc, char **argv)
+{
+  s7_scheme *s7 = s7_init();
+  s7_define_function(s7, "our-abs", our_abs, 1, 0, false, "abs replacement");
+
+  while (1)
+    {
+      char buffer[512];
+      fprintf(stdout, "\n&gt; ");
+      fgets(buffer, 512, stdin);
+      if ((buffer[0] != '\n') ||
+	  (strlen(buffer) &gt; 1))
+	{
+          char response[1024];
+	  snprintf(response, 1024, "(write %s)", buffer);
+	  s7_eval_c_string(s7, response);
+	}}
+}
+
+/*    &gt; (our-abs -1)
+ *    <em class="gray">2.0</em>
+ *    &gt; (abs (openlet (inlet 'value -3.0 'abs (lambda (x) (our-abs (x 'value)))))))
+ *    <em class="gray">6.0</em>
+ */
+</pre>
+</div>
+
+
+
+<div class="header" id="definestar1"><h4>C-side define* (s7_define_function_star)</h4></div>
+
+
+<div class="indented">
+<pre>
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+
+#include "s7.h"
+
+static s7_pointer plus(s7_scheme *sc, s7_pointer args)
+{
+  /* (define* (plus (red 32) blue) (+ (* 2 red) blue)) */
+  return(s7_make_integer(sc, 2 * s7_integer(s7_car(args)) + s7_integer(s7_cadr(args))));
+}
+
+int main(int argc, char **argv)
+{
+  s7_scheme *s7 = s7_init();
+  <em class=red>s7_define_function_star</em>(s7, "plus", plus, "(red 32) blue", "an example of define* from C");
+
+  while (1)
+    {
+      char buffer[512];
+      fprintf(stdout, "\n&gt; ");
+      fgets(buffer, 512, stdin);
+      if ((buffer[0] != '\n') ||
+	  (strlen(buffer) &gt; 1))
+	{
+          char response[1024];
+	  snprintf(response, 1024, "(write %s)", buffer);
+	  s7_eval_c_string(s7, response);
+	}}
+}
+
+/*
+ *    &gt; (plus 2 3)
+ *    <em class="gray">7</em>
+ *    &gt; (plus :blue 3)
+ *    <em class="gray">67</em>
+ *    &gt; (plus :blue 1 :red 4)
+ *    <em class="gray">9</em>
+ *    &gt; (plus 2 :blue 3)
+ *    <em class="gray">7</em>
+ *    &gt; (plus :blue 3 :red 1)
+ *    <em class="gray">5</em>
+ */
+</pre></div>
+
+
+
+
+
+<div class="header" id="definemacro1"><h4>C-side define-macro (s7_define_macro)</h4></div>
+
+
+<div class="indented">
+<pre>
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+
+#include "s7.h"
+
+static s7_pointer plus(s7_scheme *sc, s7_pointer args)
+{
+  /* (define-macro (plus a b) `(+ ,a ,b)) */
+  s7_pointer a = s7_car(args);
+  s7_pointer b = s7_cadr(args);
+  return(s7_list(sc, 3, s7_make_symbol(sc, "+"),  a, b));
+}
+
+int main(int argc, char **argv)
+{
+  s7_scheme *s7 = s7_init();
+  <em class=red>s7_define_macro</em>(s7, "plus", plus, 2, 0, false, "plus adds its two arguments");
+
+  while (1)
+    {
+      char buffer[512];
+      fprintf(stdout, "\n&gt; ");
+      fgets(buffer, 512, stdin);
+      if ((buffer[0] != '\n') ||
+	  (strlen(buffer) &gt; 1))
+	{
+          char response[1024];
+	  snprintf(response, 1024, "(write %s)", buffer);
+	  s7_eval_c_string(s7, response);
+	}}
+}
+
+/*
+ *    &gt; (plus 2 3)
+ *    <em class="gray">5</em>
+ */
+</pre></div>
+
+
+
+<div class="header" id="definegeneric"><h4>define a generic function in C</h4></div>
+
+<p>In scheme, a function becomes generic simply by <code>(apply ((car args) 'func) args)</code>.
+To accomplish the same thing in C, we use s7_method and s7_apply_function:
+</p>
+
+<div class="indented">
+<pre>
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+
+#include "s7.h"
+
+static s7_pointer plus(s7_scheme *sc, s7_pointer args)
+{
+  #define plus_help "(plus obj ...) applies obj's plus method to obj and any trailing arguments."
+  s7_pointer obj = s7_car(args);
+  s7_pointer method = <em class=red>s7_method</em>(sc, obj, s7_make_symbol(sc, "plus"));
+  if (s7_is_procedure(method))
+    return(<em class=red>s7_apply_function</em>(sc, method, args));
+  return(s7_f(sc));
+}
+
+int main(int argc, char **argv)
+{
+  s7_scheme *s7 = s7_init();
+  s7_define_function(s7, "plus", plus, 1, 0, true, plus_help);
+  while (1)
+    {
+      char buffer[512];
+      fprintf(stdout, "\n&gt; ");
+      fgets(buffer, 512, stdin);
+      if ((buffer[0] != '\n') ||
+	  (strlen(buffer) &gt; 1))
+	{
+          char response[1024];
+	  snprintf(response, 1024, "(write %s)", buffer);
+	  s7_eval_c_string(s7, response);
+	}}
+}
+
+/* gcc -c s7.c -I.
+ * gcc -o ex15 ex15.c s7.o -I. -lm -ldl
+ *
+ *     &gt; (plus 1 2)
+ *     <em class="gray">#f</em>
+ *     &gt; (define obj (openlet (inlet 'plus (lambda args (apply + 1 (cdr args))))))
+ *     <em class="gray">obj</em>
+ *     &gt; (plus obj 2 3)
+ *     <em class="gray">6</em>
+ */
+</pre>
+</div>
+
+
+
+<div class="header" id="signal"><h4>Signal handling and continuations</h4></div>
+
+
+<div class="indented">
+<pre>
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include &lt;signal.h&gt;
+
+#include "s7.h"
+
+static s7_scheme *s7;
+struct sigaction new_act, old_act;
+
+static void handle_sigint(int ignored)
+{
+  fprintf(stderr, "interrupted!\n");
+  s7_symbol_set_value(s7, s7_make_symbol(s7, "*interrupt*"), <em class=red>s7_make_continuation</em>(s7)); /* save where we were interrupted */
+  sigaction(SIGINT, &amp;new_act, NULL);
+  s7_quit(s7);                             /* get out of the eval loop if possible */
+}
+
+static s7_pointer our_sleep(s7_scheme *sc, s7_pointer args)
+{
+  /* slow down our infinite loop for demo purposes */
+  sleep(1);
+  return(s7_f(sc));
+}
+
+int main(int argc, char **argv)
+{
+  s7 = s7_init();
+  s7_define_function(s7, "sleep", our_sleep, 0, 0, false, "(sleep) sleeps");
+  s7_define_variable(s7, "*interrupt*", s7_f(s7));
+  /* Scheme variable *interrupt* holds the continuation at the point of the interrupt */
+
+  sigaction(SIGINT, NULL, &amp;old_act);
+  if (old_act.sa_handler != SIG_IGN)
+    {
+      memset(&amp;new_act, 0, sizeof(new_act));
+      new_act.sa_handler = &amp;handle_sigint;
+      sigaction(SIGINT, &amp;new_act, NULL);
+    }
+
+  while (1)
+    {
+      char buffer[512];
+      fprintf(stderr, "\n&gt; ");
+      fgets(buffer, 512, stdin);
+      if ((buffer[0] != '\n') ||
+	  (strlen(buffer) &gt; 1))
+	{
+          char response[1024];
+	  snprintf(response, 1024, "(write %s)", buffer);
+	  s7_eval_c_string(s7, response);
+	}}
+}
+
+/*
+ *    &gt; (do ((i 0 (+ i 1))) ((= i -1)) (format () "~D " i) (sleep))
+ *      ;;; now type C-C to break out of this loop
+ *    0 1 2 ^Cinterrupted!
+ *      ;;; call the continuation to continue from where we were interrupted
+ *    &gt; (*interrupt*)
+ *    3 4 5 ^Cinterrupted!
+ *    &gt; *interrupt*
+ *    #&lt;continuation&gt;
+ *    &gt; (+ 1 2)
+ *    3
+ */
+</pre></div>
+
+
+
+<div class="header" id="notify"><h4>Notification from Scheme that a given Scheme variable has been set</h4></div>
+
+
+<div class="indented">
+<pre>
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+
+#include "s7.h"
+
+static s7_pointer scheme_set_notification(s7_scheme *sc, s7_pointer args)
+{
+  /* this function is called when the Scheme variable is set! */
+  fprintf(stderr, "%s set to %s\n",
+	  s7_object_to_c_string(sc, s7_car(args)),
+	  s7_object_to_c_string(sc, s7_cadr(args)));
+  return(s7_cadr(args));
+}
+
+int main(int argc, char **argv)
+{
+  s7_scheme *s7 = s7_init();
+
+  s7_define_function(s7, "notify-C", scheme_set_notification, 2, 0, false, "called if notified-var is set!");
+  s7_define_variable(s7, "notified-var", s7_make_integer(s7, 0));
+  <em class=red>s7_set_setter</em>(s7, s7_make_symbol(s7, "notified-var"), s7_name_to_value(s7, "notify-C"));
+
+  if (argc == 2)
+    {
+      fprintf(stderr, "load %s\n", argv[1]);
+      if (!s7_load(s7, argv[1]))
+        fprintf(stderr, "can't find %s\n", argv[1]);
+    }
+  else
+    {
+      while (1)
+	{
+          char buffer[512];
+	  fprintf(stdout, "\n&gt; ");
+	  fgets(buffer, 512, stdin);
+
+	  if ((buffer[0] != '\n') ||
+	      (strlen(buffer) &gt; 1))
+	    {
+              char response[1024];
+	      snprintf(response, 1024, "(write %s)", buffer);
+	      s7_eval_c_string(s7, response);
+	    }}}
+}
+
+/*    &gt; notified-var
+ *    <em class="gray">0</em>
+ *    &gt; (set! notified-var 32)
+ *    <em class="gray">notified-var set to 32</em>
+ *    <em class="gray">32</em>
+ */
+</pre></div>
+
+
+
+
+
+<div class="header" id="namespace"><h4>Load C defined stuff into a separate namespace</h4></div>
+
+
+<div class="indented">
+<pre>
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+
+#include "s7.h"
+
+static s7_pointer func1(s7_scheme *sc, s7_pointer args)
+{
+  return(s7_make_integer(sc, s7_integer(s7_car(args)) + 1));
+}
+
+int main(int argc, char **argv)
+{
+  s7_scheme *s7 = s7_init();
+  /* "func1" and "var1" will be placed in an anonymous environment,
+   *   accessible from Scheme via the global variable "lib-exports"
+   */
+  s7_pointer new_env = <em class=red>s7_inlet</em>(s7, s7_curlet(s7), s7_nil(s7));
+  /* make a private environment for func1 and var1 below (this is our "namespace") */
+  s7_gc_protect(s7, new_env);
+
+  s7_define(s7, <em class=red>new_env</em>,
+	    s7_make_symbol(s7, "func1"),
+	    <em class=red>s7_make_function</em>(s7, "func1", func1, 1, 0, false, "func1 adds 1 to its argument"));
+
+  s7_define(s7, <em class=red>new_env</em>, s7_make_symbol(s7, "var1"), s7_make_integer(s7, 32));
+  /* those two symbols are now defined in the new environment */
+
+  /* add "lib-exports" to the global environment */
+  s7_define_variable(s7, "lib-exports", <em class=red>s7_let_to_list</em>(s7, new_env));
+
+  if (argc == 2)
+    {
+      fprintf(stderr, "load %s\n", argv[1]);
+      if (!s7_load(s7, argv[1]))
+        fprintf(stderr, "can't find %s\n", argv[1]);
+    }
+  else
+    {
+      while (1)
+	{
+          char buffer[512];
+	  fprintf(stdout, "\n&gt; ");
+	  fgets(buffer, 512, stdin);
+
+	  if ((buffer[0] != '\n') ||
+	      (strlen(buffer) &gt; 1))
+	    {
+              char response[1024];
+	      snprintf(response, 1024, "(write %s)", buffer);
+	      s7_eval_c_string(s7, response);
+	    }}}
+}
+
+/*     &gt; func1
+ *     <em class="gray">;func1: unbound variable, line 1</em>
+ *     &gt; lib-exports
+ *     <em class="gray">((var1 . 32) (func1 . func1))</em>
+ *     ;; so lib-exports has the C-defined names and values
+ *     ;; we can use these directly:
+ *
+ *     &gt; (define lib-env (apply <em class=red>sublet</em> (curlet) lib-exports))
+ *     <em class="gray">lib-env</em>
+ *     &gt; (<em class=red>with-let</em> lib-env (func1 var1))
+ *     <em class="gray">33</em>
+ *
+ *     ;; or rename them to prepend "lib:"
+ *     &gt; (define lib-env (apply sublet
+                                (curlet)
+                                (map (lambda (binding)
+                                       (cons (string-&gt;symbol
+                                               (string-append "lib:" (symbol-&gt;string (car binding))))
+                                             (cdr binding)))
+                                     lib-exports)))
+ *     <em class="gray">lib-env</em>
+ *     &gt; (with-let lib-env (lib:func1 lib:var1))
+ *     <em class="gray">33</em>
+ *
+ *     ;;; now for convenience, place "func1" in the global environment under the name "func2"
+ *     &gt; (define func2 (cdadr lib-exports))
+ *     <em class="gray">func2</em>
+ *     &gt; (func2 1)
+ *     <em class="gray">2</em>
+ */
+</pre></div>
+
+
+
+
+
+<div class="header" id="Cerrors"><h4>Handle scheme errors in C</h4></div>
+
+
+<div class="indented">
+<pre>
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+
+#include "s7.h"
+
+static s7_pointer error_handler(s7_scheme *sc, s7_pointer args)
+{
+  fprintf(stdout, "error: %s\n", s7_string(s7_car(args)));
+  return(s7_f(sc));
+}
+
+int main(int argc, char **argv)
+{
+  s7_scheme *s7 = s7_init();
+  bool with_error_hook = false;
+  s7_define_function(s7, "error-handler", error_handler, 1, 0, false, "our error handler");
+
+  if (with_error_hook)
+    s7_eval_c_string(s7, "(set! (hook-functions *error-hook*)                    \n\
+                            (list (lambda (hook)                                 \n\
+                                    (error-handler                               \n\
+                                      (apply format #f (hook 'data)))            \n\
+                                    (set! (hook 'result) 'our-error))))");
+  while (1)
+    {
+      char buffer[512];
+      fprintf(stdout, "\n&gt; ");
+      fgets(buffer, 512, stdin);
+
+      if ((buffer[0] != '\n') ||
+	  (strlen(buffer) &gt; 1))
+	{
+	  s7_pointer result;
+	  int gc_loc = -1;
+	  const char *errmsg = NULL;
+
+	  /* trap error messages */
+	  s7_pointer old_port = s7_set_current_error_port(s7, s7_open_output_string(s7));
+	  if (old_port != s7_nil(s7))
+	    gc_loc = s7_gc_protect(s7, old_port);
+
+	  /* evaluate the input string */
+	  result = s7_eval_c_string(s7, buffer);
+
+	  /* print out the value wrapped in "{}" so we can tell it from other IO paths */
+	  fprintf(stdout, "{%s}", s7_object_to_c_string(s7, result));
+
+	  /* look for error messages */
+	  errmsg = s7_get_output_string(s7, s7_current_error_port(s7));
+
+	  /* if we got something, wrap it in "[]" */
+	  if ((errmsg) &amp;&amp; (*errmsg))
+	    fprintf(stdout, "[%s]", errmsg);
+
+	  s7_close_output_port(s7, s7_current_error_port(s7));
+	  s7_set_current_error_port(s7, old_port);
+	  if (gc_loc != -1)
+	    s7_gc_unprotect_at(s7, gc_loc);
+	}}
+}
+
+/*
+ *   gcc -c s7.c -I. -g3
+ *   gcc -o ex3 ex3.c s7.o -lm -I. -ldl
+ *
+ * if with_error_hook is false,
+ *
+ *   &gt; (+ 1 2)
+ *   <em class="gray">{3}</em>
+ *   &gt; (+ 1 #\c)
+ *   <em class="gray">{wrong-type-arg}[</em>
+ *   <em class="gray">;+ argument 2, #\c, is character but should be a number, line 1</em>
+ *   ]
+ *
+ * so s7 by default prepends ";" to the error message, and appends "\n",
+ *   sending that to current-error-port, and the error type ('wrong-type-arg here)
+ *   is returned.
+ *
+ * if with_error_hook is true,
+ *
+ *   &gt; (+ 1 2)
+ *   <em class="gray">{3}</em>
+ *   &gt; (+ 1 #\c)
+ *   <em class="red">error</em><em class="gray">: + argument 2, #\c, is character but should be a number</em>
+ *   <em class="gray">{our-error}</em>
+ *
+ * so now the *error-hook* code handles both the error reporting and
+ *   the value returned ('our-error in this case).
+ */
+</pre></div>
+
+
+
+<div class="header" id="testhook"><h4>C and Scheme hooks</h4></div>
+
+
+<div class="indented">
+<pre>
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+
+#include "s7.h"
+
+static s7_pointer my_hook_function(s7_scheme *sc, s7_pointer args)
+{
+  fprintf(stderr, "a is %s\n", s7_object_to_c_string(sc, s7_symbol_local_value(sc, s7_make_symbol(sc, "a"), s7_car(args))));
+  return(s7_car(args));
+}
+
+int main(int argc, char **argv)
+{
+  s7_scheme *s7 = s7_init();
+
+  /* define test_hook in C, test-hook in Scheme, arguments are named a and b */
+  s7_pointer test_hook = <em class=red>s7_eval_c_string</em>(s7, "(make-hook 'a 'b)");
+  s7_define_constant(s7, "test-hook", test_hook);
+
+  /* add my_hook_function to the test_hook function list */
+  <em class=red>s7_hook_set_functions</em>(s7, test_hook,
+			s7_cons(s7,
+				s7_make_function(s7, "my-hook-function", my_hook_function, 1, 0, false, "my hook-function"),
+				s7_hook_functions(s7, test_hook)));
+  while (1)
+    {
+      char buffer[512];
+      fprintf(stdout, "\n&gt; ");
+      fgets(buffer, 512, stdin);
+
+      if ((buffer[0] != '\n') ||
+	  (strlen(buffer) &gt; 1))
+	{
+          char response[1024];
+	  snprintf(response, 1024, "(write %s)", buffer);
+	  s7_eval_c_string(s7, response);
+	}}
+}
+
+/*
+ *    &gt; test-hook
+ *    <em class="gray">#&lt;lambda (hook)&gt;</em>
+ *    &gt; (hook-functions test-hook)
+ *    <em class="gray">(my-hook-function)</em>
+ *    &gt; (test-hook 1 2)
+ *    <em class="gray">a is 1</em>
+ *    <em class="gray">#&lt;unspecified&gt;</em>
+ */
+</pre></div>
+
+
+
+
+
+<div class="header" id="dload"><h4>Load a shared library</h4></div>
+
+<p>We can use dlopen to load a shared library, and dlsym to initialize
+that library in our main program.  The tricky part is to conjure up the right
+compiler and loader flags.
+First we define a module that defines a new s7 function, add-1 that we'll tie
+into s7 explicitly, and another
+function that we'll try to call by waving a wand.
+</p>
+
+
+<div class="indented">
+<pre>
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+
+#include "s7.h"
+
+double a_function(double an_arg);
+double a_function(double an_arg)
+{
+  return(an_arg + 1.0);
+}
+
+static s7_pointer add_1(s7_scheme *sc, s7_pointer args)
+{
+  return(s7_make_integer(sc, s7_integer(s7_car(args)) + 1));
+}
+
+void init_ex(s7_scheme *sc);
+void init_ex(s7_scheme *sc)  /* this needs to be globally accessible (not "static") */
+{
+  /* tell s7 about add-1, but leave a_function hidden */
+  s7_define_function(sc, "add-1", add_1, 1, 0, false, "(add-1 x) adds 1 to x");
+}
+
+</pre></div>
+
+
+<p>And here is our main program:
+</p>
+
+
+<div class="indented">
+<pre>
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+
+#include "s7.h"
+#include &lt;dlfcn.h&gt;
+
+static void *library = NULL;
+
+static s7_pointer try(s7_scheme *sc, s7_pointer args)
+{
+  /* try tries to call an arbitrary function in the shared library */
+  void *func = <em class=red>dlsym</em>(library, s7_string(s7_car(args)));
+  if (func)
+    {
+      /* we'll assume double f(double) */
+      typedef double (*dl_func)(double arg);
+      return(s7_make_real(sc, ((dl_func)<em class=red>func</em>)(s7_real(s7_cadr(args)))));
+    }
+  return(s7_error(sc, s7_make_symbol(sc, "can't find function"),
+		  s7_list(sc, 2, s7_make_string(sc, "loader error: ~S"),
+			         s7_make_string(sc, dlerror()))));
+}
+
+static s7_pointer cload(s7_scheme *sc, s7_pointer args)
+{
+  /* cload loads a shared library */
+  #define CLOAD_HELP "(cload so-file-name) loads the module"
+  library = dlopen(s7_string(s7_car(args)), RTLD_LAZY);
+  if (library)
+    {
+      /* call our init func to define add-1 in s7 */
+      void *init_func = <em class=red>dlsym</em>(library, s7_string(s7_cadr(args)));
+      if (init_func)
+	{
+	  typedef void *(*dl_func)(s7_scheme *sc);
+	  ((dl_func)<em class=red>init_func</em>)(sc);  /* call the initialization function (init_ex above) */
+	  return(s7_t(sc));
+	}}
+  return(s7_error(sc, s7_make_symbol(sc, "load-error"),
+		      s7_list(sc, 2, s7_make_string(sc, "loader error: ~S"),
+			             s7_make_string(sc, dlerror()))));
+}
+
+int main(int argc, char **argv)
+{
+  s7_scheme *s7 = s7_init();
+  s7_define_function(s7, "cload", cload, 2, 0, false, CLOAD_HELP);
+  s7_define_function(s7, "try", try, 2, 0, false,
+                         "(try name num) tries to call name in the shared library with the argument num.");
+
+  while (1)
+    {
+      char buffer[512];
+      fprintf(stdout, "\n&gt; ");
+      fgets(buffer, 512, stdin);
+
+      if ((buffer[0] != '\n') ||
+	  (strlen(buffer) &gt; 1))
+	{
+          char response[1024];
+	  snprintf(response, 1024, "(write %s)", buffer);
+	  s7_eval_c_string(s7, response);
+	}}
+}
+
+/* Put the module in the file ex3a.c and the main program in ex3.c, then
+ *
+ * in Linux:
+ *   gcc -c -fPIC ex3a.c
+ *   gcc ex3a.o -shared -o ex3a.so
+ *   gcc -c s7.c -I. -fPIC -shared
+ *   gcc -o ex3 ex3.c s7.o -lm -ldl -I. -Wl,-export-dynamic
+ *   # omit -ldl in freeBSD
+ *
+ * in Mac OSX:
+ *   gcc -c ex3a.c
+ *   gcc ex3a.o -o ex3a.so -dynamic -bundle -undefined suppress -flat_namespace
+ *   gcc -c s7.c -I. -dynamic -bundle -undefined suppress -flat_namespace
+ *   gcc -o ex3 ex3.c s7.o -lm -ldl -I.
+ *
+ * and run it:
+ *   ex3
+ *   &gt; (cload "/home/bil/snd-18/ex3a.so" "init_ex")
+ *   <em class="gray">#t</em>
+ *   &gt; (add-1 2)
+ *   <em class="gray">3</em>
+ *   &gt; (try "a_function" 2.5)
+ *   <em class="gray">3.5</em>
+ */
+</pre></div>
+
+<p>All of this is just boring boilerplate, so with a little support from s7,
+we can write a script to do the entire linkage.  The s7 side is an extension
+to "load" that loads a shared object file if its extension is "so", and
+runs an initialization function whose name is defined in the load
+environment (the optional second argument to load).  An example of the scheme side is cload.scm,
+included in the s7 tarball.  It defines a function that can be
+called:
+</p>
+
+<pre class="indented">
+(c-define '(double j0 (double)) "m" "math.h")
+</pre>
+
+<p>This links the s7 function m:j0 to the math library
+function j0.  See <a href="s7-scm.html#cload">cload.scm</a> for more details.
+</p>
+
+
+<p>Here's a shorter example:
+</p>
+<div class="indented">
+<pre>
+add1.c:
+
+#include &lt;stdlib.h&gt;
+#include "s7.h"
+
+static s7_pointer add1(s7_scheme *sc, s7_pointer args)
+{
+  if (s7_is_integer(s7_car(args)))
+    return(s7_make_integer(sc, 1 + s7_integer(s7_car(args))));
+  return(s7_wrong_type_arg_error(sc, "add1", 1, s7_car(args), "an integer"));
+}
+
+void add1_init(s7_scheme *sc);
+void add1_init(s7_scheme *sc)
+{
+  s7_define_function(sc, "add1", add1, 1, 0, false, "(add1 int) adds 1 to int");
+}
+
+/* gcc -fpic -c add1.c
+ * gcc -shared -Wl,-soname,libadd1.so -o libadd1.so add1.o -lm -lc
+ * gcc s7.c -o repl -fpic -DWITH_MAIN -I. -ldl -lm -Wl,-export-dynamic -DUSE_SND=0
+ * repl
+ *   (load "libadd1.so" (inlet 'init_func 'add1_init))
+ *   (add1 2)
+ */
+</pre>
+</div>
+
+
+
+<div class="header" id="gmpex"><h4>Bignums in C</h4></div>
+
+<p>Bignum support depends on gmp, mpfr, and mpc.  In this example, we define "add-1" which adds
+1 to any kind of number.  The s7_big_* functions return the underlying gmp/mpfr/mpc pointer.
+</p>
+
+
+<div class="indented">
+<pre>
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+
+#include &lt;gmp.h&gt;
+#include &lt;mpfr.h&gt;
+#include &lt;mpc.h&gt;
+
+#include "s7.h"
+
+static s7_pointer big_add_1(s7_scheme *sc, s7_pointer args)
+{
+  /* add 1 to either a normal number or a bignum */
+  s7_pointer n;
+  s7_pointer x = s7_car(args);
+  if (s7_is_big_integer(x))
+    {
+      mpz_t big_n;
+      mpz_init_set(big_n, *s7_big_integer(x));
+      mpz_add_ui(big_n, big_n, 1);
+      n = s7_make_big_integer(sc, &amp;big_n);
+      mpz_clear(big_n);
+      return(n);
+    }
+  if (s7_is_big_ratio(x))
+    {
+      mpq_t big_q;
+      mpq_init(big_q);
+      mpq_set_si(big_q, 1, 1);
+      mpq_add(big_q, *s7_big_ratio(x), big_q);
+      mpq_canonicalize(big_q);
+      n = s7_make_big_ratio(sc, &amp;big_q);
+      mpq_clear(big_q);
+      return(n);
+    }
+  if (s7_is_big_real(x))
+    {
+      mpfr_t big_x;
+      mpfr_init_set(big_x, *s7_big_real(x), MPFR_RNDN);
+      mpfr_add_ui(big_x, big_x, 1, MPFR_RNDN);
+      n = s7_make_big_real(sc, &amp;big_x);
+      mpfr_clear(big_x);
+      return(n);
+    }
+  if (s7_is_big_complex(x))
+    {
+      mpc_t big_z;
+      mpc_init2(big_z, mpc_get_prec(*s7_big_complex(x)));
+      mpc_add_ui(big_z, *s7_big_complex(x), 1, MPC_RNDNN);
+      n = s7_make_big_complex(sc, &amp;big_z);
+      mpc_clear(big_z);
+      return(n);
+    }
+  if (s7_is_integer(x))
+    return(s7_make_integer(sc, 1 + s7_integer(x)));
+  if (s7_is_rational(x))
+    return(s7_make_ratio(sc, s7_numerator(x) + s7_denominator(x), s7_denominator(x)));
+  if (s7_is_real(x))
+    return(s7_make_real(sc, 1.0 + s7_real(x)));
+  if (s7_is_complex(x))
+    return(s7_make_complex(sc, 1.0 + s7_real_part(x), s7_imag_part(x)));
+  return(s7_wrong_type_arg_error(sc, "add-1", 0, x, "a number"));
+}
+
+int main(int argc, char **argv)
+{
+  s7_scheme *s7 = s7_init();
+  s7_define_function(s7, "add-1", big_add_1, 1, 0, false, "(add-1 num) adds 1 to num");
+
+  while (1)
+    {
+      char buffer[512];
+      fprintf(stdout, "\n&gt; ");
+      fgets(buffer, 512, stdin);
+      if ((buffer[0] != '\n') ||
+	  (strlen(buffer) &gt; 1))
+	{
+          char response[1024];
+	  snprintf(response, 1024, "(write %s)", buffer);
+	  s7_eval_c_string(s7, response);
+	}}
+}
+
+/*
+ *   gcc -DWITH_GMP=1 -c s7.c -I. -O2 -g3
+ *   gcc -DWITH_GMP=1 -o gmpex gmpex.c s7.o -I. -O2 -lm -ldl -lgmp -lmpfr -lmpc
+ *
+ *   gmpex
+ *   &gt; (add-1 1)
+ *   2
+ *   &gt; (add-1 2/3)
+ *   5/3
+ *   &gt; (add-1 1.4)
+ *   2.4
+ *   &gt; (add-1 1.5+i)
+ *   2.5+1i
+ *   &gt; (add-1 (bignum 3))
+ *   4
+ *   &gt; (add-1 (bignum 3/4))
+ *   7/4
+ *   &gt; (add-1 (bignum 2.5))
+ *   3.500E0
+ *   &gt; (add-1 (bignum 1.5+i))
+ *   2.500E0+1.000E0i
+ */
+</pre>
+</div>
+
+
+<p>To tie mpfr's bessel-j0 into s7 at run-time:
+</p>
+
+<div class="indented">
+<pre>
+/* libgmp_s7.c */
+
+#include &lt;gmp.h&gt;
+#include &lt;mpfr.h&gt;
+#include &lt;mpc.h&gt;
+
+#define WITH_GMP 1
+#include "s7.h"
+
+static s7_pointer gmp_bessel_j0(s7_scheme *sc, s7_pointer args)
+{
+  s7_pointer x, result;
+  mpfr_t mp;
+
+  mpfr_init2(mp, s7_integer(s7_starlet_ref(sc, s7_make_symbol(sc, "bignum-precision"))));
+  /* initialize the mpfr variable mp to the current s7 bignum-precision */
+
+  x = s7_car(args);
+  if (s7_is_big_real(x))
+    <em class=red>mpfr_j0</em>(mp, *s7_big_real(x), MPFR_RNDN);
+  else
+    {
+      if (s7_is_real(x))
+	{
+	  mpfr_set_d(mp, s7_real(x), MPFR_RNDN);
+	  <em class=red>mpfr_j0</em>(mp, mp, MPFR_RNDN);
+	}
+      else return(s7_wrong_type_arg_error(sc, "gmp_bessel_j0", 1, x, "real"));
+    }
+
+  result = s7_make_big_real(sc, &amp;mp);
+  mpfr_clear(mp);
+  return(result);
+}
+
+void libgmp_s7_init(s7_scheme *sc);
+void libgmp_s7_init(s7_scheme *sc)
+{
+  s7_define_function(sc, "bessel-j0", gmp_bessel_j0, 1, 0, false, "(bessel-j0 x) returns j0(x)");
+}
+</pre>
+</div>
+
+<p>libarb_s7.c provides some extensions of the multiprecision math: Bessel functions and the like.  It is based on
+the Flint and Arb libraries, flintlib.org and arblib.org.  In Linux:
+</p>
+
+<pre class="indented">
+gcc -fPIC -c libarb_s7.c
+gcc libarb_s7.o -shared -o libarb_s7.so -lflint
+repl
+  &gt; (load "libarb_s7.so" (inlet 'init_func 'libarb_s7_init))
+  <em class="gray">#f</em>
+  &gt; (acb_bessel_j 0 1.0)
+  <em class="gray">7.651976865579665514497175261026632209096E-1</em>
+</pre>
+<p>As of January 2024, libarb has been absorbed into libflint 3.0.
+</p>
+
+
+<div class="header" id="gdb"><h4>gdb</h4></div>
+
+<p>
+gdbinit has some debugging commands, intended for your ~/.gdbinit file.
+</p>
+
+<pre class="indented">
+s7print interprets its argument as an s7 value and displays it
+s7eval evals its argument (a string)
+s7stack displays the current s7 stack (nested lets)
+s7value prints the value of the variable passed by its print name: s7v "*features*"
+s7let shows all non-global variables that are currently accessible
+s7history shows the history entries (if enabled)
+</pre>
+
+<p>gdbinit also has s7bt, a bt replacement that prints the gdb backtrace info,
+replacing bare pointer numbers with their s7 value, wherever possible:
+</p>
+
+<pre class="indented">
+(gdb) s7bt
+#0  0x000055555567f7ca in check_cell (p=<b>#&lt;lambda (lst ind)&gt;</b>,
+    func=0x5555559106e0 &lt;__FUNCTION__.10273&gt; "mark_slot", line=3976) at s7.c:28494
+#1  0x000055555567f84d in check_nref (p=<b>#&lt;lambda (lst ind)&gt;</b>,
+    func=0x5555559106e0 &lt;__FUNCTION__.10273&gt; "mark_slot", line=3976) at s7.c:28507
+#2  0x0000555555563201 in mark_slot (p=<b>'list-ref #&lt;lambda (lst ind)&gt;</b>) at s7.c:3976
+#3  0x0000555555564ce0 in mark_let (env=<b>#&lt;mock-number-class&gt;</b>) at s7.c:4506
+#4  0x0000555555563239 in mark_slot (p=<b>'mock-number-class #&lt;mock-number-class&gt;</b>) at s7.c:3976
+#5  0x0000555555564ce0 in mark_let (env=<b>(inlet 'mock-number-class #&lt;mock-number-class&gt; 'mock-number mock-number)</b>) at s7.c:4506
+#6  0x0000555555563239 in mark_slot (p=<b>'*mock-number* (inlet 'mock-number-class #&lt;mock-number-class&gt; 'mock-number...)</b>) at s7.c:3976
+#7  0x0000555555564ce0 in mark_let (env=<b>(inlet '*features* (mockery.scm stuff.scm linux autoload dlopen...))</b>) at s7.c:4506
+#8  0x0000555555565697 in mark_closure (p=<b>reactive-vector</b>) at s7.c:4590
+#9  0x0000555555566872 in mark_rootlet (sc=0x555555b41eb0) at s7.c:4813
+#10 0x0000555555566a2f in gc (sc=0x555555b41eb0) at s7.c:4897
+#11 0x000055555558e903 in copy_stack (sc=0x555555b41eb0, old_v=<b>[sc-&gt;stack] #&lt;stack&gt;</b>) at s7.c:9024
+</pre>
+
+
+<div class="header" id="webassembly"><h4>WASM</h4></div>
+
+<p>s7 can be compiled to web assembly.  There are instructions at
+<a href="https://github.com/actonDev/s7-playground/">s7-playground (Christos Vagias)</a>
+and
+<a href="https://github.com/iainctduncan/s7-wasm">s7-wasm (Iain Duncan)</a>.
+</p>
+
+
+
+<div class="header" id="ffinotes"><h4>FFI notes</h4></div>
+
+<ul>
+  <li><a href="#cerrors">Errors</a>
+  <li><a href="#cgcprotection">GC protection</a>
+  <li><a href="#ccload">Load</a>
+  <li><a href="#cevalapply">Eval and Apply</a>
+  <li><a href="#cdefine">Define</a>
+  <li><a href="#cfunctioninfo">Function info</a>
+  <li><a href="#ccobjects">C-objects</a>
+  <li><a href="#cio">IO</a>
+  <li><a href="#clets">Lets</a>
+  <li><a href="#csymbols">Symbols</a>
+  <li><a href="#cnumbers">Numbers</a>
+  <li><a href="#clists">Lists</a>
+  <li><a href="#cvectors">Vectors</a>
+  <li><a href="#ccpointers">C-pointers</a>
+  <li><a href="#cstrings">Strings</a>
+  <li><a href="#ccharacters">Characters</a>
+  <li><a href="#chashtables">Hash-tables</a>
+  <li><a href="#citerators">Iterators</a>
+  <li><a href="#chooks">Hooks</a>
+  <li><a href="#cconstants">Constants</a>
+  <li><a href="#coptimizations">Optimization</a>
+  <li><a href="#candsoon">And so on...</a>
+</ul>
+
+<div class="shortheader" id="cerrors">Errors</div>
+
+<p>Most of the s7.h functions do little, if any, error checking.  s7_car, for example,
+does not check that its argument is a pair.  Partly this is a matter of speed; partly
+of simplicity.  If we had elaborate error checks, we'd need some convention
+for passing error information back to the caller, and of course separate versions
+of each function for cases where all those checks are redundant.  You can easily
+make your own C version of s7_car that includes error checks:
+</p>
+<pre class="indented">
+static s7_pointer my_car(s7_scheme *sc, s7_pointer lst)
+{
+  if (s7_is_pair(lst))
+    return(s7_car(lst));
+  return(<em class="red">s7_wrong_type_arg_error</em>(sc, "my_car", 0, "a pair"));
+}
+</pre>
+
+<p>The s7.h error functions are:
+</p>
+
+<pre class="indented">
+s7_pointer s7_error(s7_scheme *sc, s7_pointer type, s7_pointer info);
+
+s7_pointer s7_wrong_type_arg_error(s7_scheme *sc, const char *caller, s7_int arg_n, s7_pointer arg, const char *descr);
+s7_pointer s7_wrong_type_error(s7_scheme *sc, s7_pointer caller, s7_int arg_n, s7_pointer arg, s7_pointer descr);
+s7_pointer s7_out_of_range_error(s7_scheme *sc, const char *caller, s7_int arg_n, s7_pointer arg, const char *descr);
+s7_pointer s7_wrong_number_of_args_error(s7_scheme *sc, const char *caller, s7_pointer args);
+
+s7_pointer s7_current_error_port(s7_scheme *sc);
+s7_pointer s7_set_current_error_port(s7_scheme *sc, s7_pointer port);
+</pre>
+
+<p>s7_error is equivalent to the scheme error function, and like the latter, it takes two arguments:
+a symbol giving the error type, and a list giving the error data.  In s7, all of the data lists
+are organized so that you can <code>(apply format #f data)</code> to get an error string.
+If you're using catch to handle errors, the error type is what catch looks for.  So, the
+s7_wrong_type_arg_error call above could be:
+</p>
+<pre class="indented">
+s7_error(sc, s7_make_symbol(sc, "wrong-type-arg"),
+             s7_list(sc, 3, s7_make_string(sc, "~S is a ~S, but should be a pair"),
+                            s7_car(lst),
+                            s7_type_of(sc, s7_car(lst))));
+</pre>
+<p>s7_wrong_type_arg_error takes the name of the caller, the argument number, the argument itself,
+and a description of the type expected.  If the argument number is 0, that info is left out of the
+error message (that is, the caller takes only one argument).  s7_out_of_range_error is similar.
+s7_wrong_number_of_args_error takes the caller's name and the offending arg list.  The corresponding
+error types are 'wrong-type-arg, 'wrong-number-of-args, and 'out-of-range.
+A faster version is s7_wrong_type_error; here the caller is an s7 symbol or string, and the
+description is an s7 string.
+</p>
+
+<p>Normally, s7_error sends its error message
+to the current error-port which defaults to stderr. In GUI-based apps,
+you may need to redirect the output to your interface.  One method,
+used in Snd's snd-motif.c, captures the error output in an output string:
+</p>
+<pre class="indented">
+old_port = s7_set_current_error_port(s7, s7_open_output_string(s7));
+...
+result = s7_eval_c_string(s7, text);
+errmsg = s7_get_output_string(s7, s7_current_error_port(s7));
+s7_close_output_port(s7, s7_current_error_port(s7));
+s7_set_current_error_port(s7, old_port);
+...
+</pre>
+<p>and if errmsg is not NULL, it posts it somewhere.
+(You'll also want to GC-protect the old port while it is idle).
+</p>
+<p>s7_error does not return; its s7_pointer return type is just a convenience.  It unwinds the
+scheme stack, closing files, handling dynamic-winds, looking for a catch that matches its type argument
+and so on, then longjmps to unwind the C stack.  If a catch is found, its error handler becomes the new point
+of execution.
+</p>
+
+<p>s7 has an internal debugger that checks everything for consistency.  If you're writing C code that
+calls the s7.h functions a lot, it is sometimes helpful to turn on this debugger by adding the
+-DS7_DEBUGGING=1 compiler flag.  s7 will run 10 to 20 times slower, but it will complain loudly
+about anything it doesn't expect.
+The internal debugger normally calls abort whenever it detects some error, so it's most convenient
+to run s7 in gdb if this flag is on.
+S7_DEBUGGING also provides various debugging functions that
+can be called from gdb.  By far the most useful is display.  It takes one argument,
+the object you want to display.  For much more
+detail, there is object_to_let_p_p.  If you're trying to look at a scheme object and have only
+its name in scheme code, use s7_name_to_value.  heap_scan, heap_analyze, and heap holders provide
+a view of the heap.  The scheme function (*s7* 'memory-usage) might also be useful in
+this context.
+s7_show_stack returns a brief list of the current Scheme stack.
+Due to tail calls and whatnot, the s7 stack is not as informative as the equivalent C stack would be.
+The s7 file <a href="#gdb">gdbinit</a> has a few gdb functions that might be helpful.  See also
+(*s7* 'history).
+</p>
+
+<p>If you find a scheme bug in s7, and want to take a stab at tracking it down, build s7 with S7_DEBUGGING=1,
+and run the buggy code.
+The internal debugger checks nearly everything the
+interpreter does, so s7 runs 10 to 20 times slower,
+but in most cases, it will pinpoint the line where
+things unravel.  It also provides GC info about each
+cell (where it was last allocated or freed, etc)
+To get more context,
+there's also the switch in s7.c, SHOW_EVAL_OPS, which
+sends out an enormous log of the interpreter's adventures.
+Even more detailed info can be generated via the
+OPT_PRINT and DO_PRINT switches, though those are
+more oriented toward questions like "why wan't this code
+fully optimized".  I always try to save a breaking
+test case in s7test.scm,
+and then run tools/auto-tester.scm overnight.
+The auto-tester is a sort of "fuzz tester" generating billions
+of random scheme code fragments, then evaluating
+them in various contexts.
+</p>
+
+
+
+<div class="shortheader" id="cgcprotection">GC protection</div>
+
+<p>If you save an s7_pointer value in C, you may need to protect it from the garbage collector.  In the example above,
+the first "..." is:
+</p>
+<pre class="indented">
+gc_loc = s7_gc_protect(s7, old_port);
+</pre>
+<p>where gc_loc is (or should be) an s7_int.  Since we're subsequently
+calling s7_eval_c_string, we need to GC protect old_port beforehand.  After the evaluation,
+</p>
+<pre class="indented">
+s7_close_output_port(s7, s7_current_error_port(s7));
+s7_set_current_error_port(s7, old_port);
+s7_gc_unprotect_at(s7, gc_loc);
+</pre>
+<p>The full set of GC protection functions is:
+</p>
+<pre class="indented">
+s7_int s7_gc_protect(s7_scheme *sc, s7_pointer x);
+void s7_gc_unprotect_at(s7_scheme *sc, s7_int loc);
+s7_pointer s7_gc_protected_at(s7_scheme *sc, s7_int loc);
+
+s7_pointer s7_gc_protect_via_stack(s7_scheme *sc, s7_pointer x);
+s7_pointer s7_gc_protect_2_via_stack(s7_scheme *sc, s7_pointer x, s7_pointer y);
+s7_pointer s7_gc_unprotect_via_stack(s7_scheme *sc, s7_pointer x);
+
+s7_pointer s7_gc_protect_via_location(s7_scheme *sc, s7_pointer x, s7_int loc);
+s7_pointer s7_gc_unprotect_via_location(s7_scheme *sc, s7_int loc);
+
+s7_pointer s7_gc_on(s7_scheme *sc, bool on);
+</pre>
+
+<p>If you create an s7 object in C, that object
+needs to be
+GC protected if there is any chance the GC might run without
+an existing Scheme-level reference to it.  s7_gc_protect places the
+object in a vector that the GC always checks, returning the object's location
+in that table.  s7_gc_unprotect_at unprotects the object (removes it from the
+vector) using the location passed to it.  s7_gc_protected_at returns the object
+at the given location.
+There is a built-in lag between the creation of a new object and its first possible GC
+(the lag time is set indirectly by GC_TEMPS_SIZE in s7.c), so you don't need to worry about
+very short term temps such as the arguments to s7_cons in:
+</p>
+<pre class="indented">
+s7_cons(s7, s7_make_real(s7, 3.14),
+            s7_cons(s7, s7_make_integer(s7, 123), s7_nil(s7)));
+</pre>
+<p>The protect_via_stack functions place the object on the s7 stack where it is
+protected until the stack unwinds past that point.  Besides speed, this provides
+a way to be sure an object is unprotected even in some complicated situation where
+error handling may bypass an explicit s7_gc_unprotect_at call.  s7_gc_protect_2_via_stack
+protects two objects in one stack location, saving stack space.
+The protect_via_location are intended for cases where you have a location already
+(from s7_gc_protect), and want to reuse it for a different object.
+s7_gc_on turns the GC on or off.  Objects can be created at a blistering pace,
+so don't leave the GC off for a long time!
+</p>
+
+<div class="shortheader" id="ccload">Load</div>
+
+<pre class="indented">
+s7_pointer s7_load(s7_scheme *sc, const char *file);
+s7_pointer s7_load_with_environment(s7_scheme *sc, const char *filename, s7_pointer e);
+s7_pointer s7_load_c_string(s7_scheme *sc, const char *content, s7_int bytes);
+s7_pointer s7_load_c_string_with_environment(s7_scheme *sc, const char *content, s7_int bytes, s7_pointer e);
+s7_pointer s7_load_path(s7_scheme *sc);
+s7_pointer s7_add_to_load_path(s7_scheme *sc, const char *dir);
+s7_pointer s7_autoload(s7_scheme *sc, s7_pointer symbol, s7_pointer file_or_function);
+void s7_autoload_set_names(s7_scheme *sc, const char **names, s7_int size); snd-xref.c
+</pre>
+<p>s7_load is similar to the scheme-side load function.  Its argument is a file name, and optionally (via s7_load_with_environment) an environment
+in which to place top-level objects.  Normally the file contains scheme code, but if WITH_C_LOADER is set when s7 is built, you can
+also load shared-object files.  If you load a shared-object file (a dynamically loadable library), the environment argument
+provides a way to pass in the initialization function (named 'init_func).  For example, the repl in s7.c needs access to
+libc's tcsetattr, so it looks for libc_s7.so (created by libc.scm).  If found,
+</p>
+<pre class="indented">
+  s7_load_with_environment(sc, "libc_s7.so",
+    s7_inlet(sc, s7_list(sc, 2, s7_make_symbol(sc, "init_func"),
+                                s7_make_symbol(sc, "libc_s7_init")));
+</pre>
+<p>You can also include an 'init_args field to pass arguments to init_func.  Here's an example that
+includes init_args:
+</p>
+<pre class="indented">
+/* tlib.c */
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include "s7.h"
+
+static s7_pointer a_function(s7_scheme *sc, s7_pointer args)
+{
+  return(s7_car(args));
+}
+
+s7_pointer tlib_init(s7_scheme *sc, s7_pointer args); /* void tlib_init(s7_scheme *sc) if no init_args */
+s7_pointer tlib_init(s7_scheme *sc, s7_pointer args)
+{
+  fprintf(stderr, "tlib_init: %s\n", s7_object_to_c_string(sc, args));
+  s7_define_function(sc, "a-function", a_function, 1, 0, true, "");
+  return(s7_car(args));
+}
+
+/* in Linux:
+   gcc -fPIC -c tlib.c
+   gcc tlib.o -shared -o tlib.so -ldl -lm -Wl,-export-dynamic
+
+   /home/bil/cl/ repl
+   &lt;1&gt; (load "tlib.so" (inlet 'init_func 'tlib_init 'init_args (list 1 2 3)))
+   tlib_init: (1 2 3)
+   1
+   &lt;2&gt; (a-function 1 2 3)
+   1
+*/
+</pre>
+<p>
+s7_load returns the last value produced during the load; so given "test.scm" with the contents:
+</p>
+<pre class="indented">
+define (f x) (+ x 1))
+32
+</pre>
+<p>when we call s7_load:</p>
+<pre class="indented">
+s7_pointer val;
+val = s7_load_with_environment(sc, "test.scm", s7_curlet(sc));
+</pre>
+<p>val is set to 32 (as a scheme object), and f is placed in the current environment.
+If "test.scm" is not in the current directory, s7 looks at the entries in its <a href="s7.html#loadpath">*load-path*</a> variable,
+trying each in turn until it finds the file.  If it fails, it returns NULL.
+s7_load_path returns this list, and s7_add_to_load_path adds a directory name to the list.
+</p>
+<p>
+s7_load_c_string takes an array of bytes representing some scheme code (xxd -i file.scm can generate these arrays),
+and treats it as if it were the contents of a file of scheme code.  So, unlike s7_eval_c_string, it can handle
+multiple statements, and things like double-quote don't need to be quoted.  nrepl.c for example
+embeds the contents of nrepl.scm at compile time, then calls s7_load_c_string at program startup.  It also
+includes notcurses_s7.c.  The end result is a stand-alone program that doesn't need to load either nrepl.scm
+or notcurses_s7.so.  The "content" argument should be a null-terminated C string. The "bytes" argument
+is the contents length, not including the trailing null, as in strlen.  There are simple examples in ffitest.c.
+</p>
+
+<blockquote>
+<div class="indented">
+<p>xxd is not ideal in this context because diffs become enormous.  I use this code to turn nrepl.scm
+into nrepl-bits.h, following the original code's layout to minimize diffs:
+</p>
+<pre class="indented">
+(call-with-output-file "nrepl-bits.h"
+  (lambda (op)
+    (call-with-input-file "nrepl.scm"
+      (lambda (ip)
+	(format op "unsigned char nrepl_scm[] = {~%  ")
+	(do ((c (read-char ip) (read-char ip))
+	     (i 0 (+ i 1)))
+	    ((eof-object? c)
+	     (format op "0};~%unsigned int nrepl_scm_len = ~D;~%" (+ i 1)))
+	  (format op "0x~X, " (char-&gt;integer c))
+	  (if (char=? c #\newline)
+	      (format op "~%  ")))))))
+</pre>
+<p>Then in nrepl.c:
+</p>
+<pre class="indented">
+      #include "nrepl-bits.h"
+      s7_load_c_string(sc, (const char *)nrepl_scm, nrepl_scm_len);
+</pre>
+<p>which replaces <code>s7_load(sc, "nrepl.scm")</code>.
+</p>
+</div>
+</blockquote>
+
+
+<p>
+s7_autoload adds a symbol to the <a href="s7.html#autoload">autoload table</a>.  As a convenience,
+s7_autoload_set_names adds an array of names+files.  The array should be sorted alphabetically
+by string&lt;? acting on the symbol names (not the file names), and the size argument is the number
+of symbol names (half the actual array size).
+snd-xref.c in Snd has more than 5000 such
+names:
+</p>
+<pre>
+static const char *snd_names[11848] = {
+    "*clm-array-print-length*", "ws.scm", /* each pair of entries is entity name + file name */
+    "*clm-channels*", "ws.scm",           /*   so clm-channels is defined in ws.scm */
+    ...
+    "zone-tailed-hawk", "animals.scm",
+    "zoom-spectrum", "examp.scm",
+};
+
+s7_autoload_set_names(sc, snd_names, 5924);
+</pre>
+
+<div class="shortheader" id="cevalapply">Eval and Apply</div>
+
+<pre class="indented">
+s7_pointer s7_eval(s7_scheme *sc, s7_pointer code, s7_pointer let);
+s7_pointer s7_eval_with_location(s7_scheme *sc, s7_pointer code, s7_pointer let, const char *caller, const char *file, s7_int line);
+s7_pointer s7_eval_c_string(s7_scheme *sc, const char *str);
+s7_pointer s7_eval_c_string_with_environment(s7_scheme *sc, const char *str, s7_pointer let);
+
+s7_pointer s7_apply_function(s7_scheme *sc, s7_pointer fnc, s7_pointer args);
+s7_pointer s7_apply_function_star(s7_scheme *sc, s7_pointer fnc, s7_pointer args);
+
+s7_pointer s7_call(s7_scheme *sc, s7_pointer func, s7_pointer args);
+s7_pointer s7_call_with_location(s7_scheme *sc, s7_pointer func, s7_pointer args, const char *caller, const char *file, s7_int line);
+s7_pointer s7_call_with_catch(s7_scheme *sc, s7_pointer tag, s7_pointer body, s7_pointer error_handler);
+
+s7_pointer s7_apply_1(s7_scheme *sc, s7_pointer args, s7_pointer (*f1)(s7_pointer a1));
+s7_pointer s7_apply_n_1(s7_scheme *sc, s7_pointer args, s7_pointer (*f1)(s7_pointer a1));
+/* and many more passing 2 to 9 arguments */
+</pre>
+<p>These functions evaluate Scheme expressions, and call Scheme functions (which might be defined in C originally).
+s7_eval evaluates a list that represents Scheme code.  That is,
+</p>
+<pre class="indented">
+s7_eval(sc, s7_cons(sc, s7_make_symbol(sc, "+"),
+               s7_cons(sc, s7_make_integer(sc, 1),
+                  s7_cons(sc, s7_make_integer(sc, 2), s7_nil(sc)))),
+            s7_rootlet(sc));
+</pre>
+<p>returns 3 (as a Scheme integer).  This may look ridiculous, but see snd-sig.c for an actual use.
+s7_eval_c_string evaluates a Scheme expression presented to it as a C string; it combines read and
+eval, whereas s7_eval is just the eval portion.
+</p>
+<pre class="indented">
+s7_eval_c_string(sc, "(+ 1 2)");
+</pre>
+<p>also returns 3.  The expression is evaluated in rootlet (the global environment).  To specify the
+environment, use s7_eval_c_string_with_environment.
+</p>
+<p>s7_apply_function and s7_apply_function_star take an s7_function and apply it to a list of arguments.
+These two functions are the low-level versions of the s7_call functions.  The latter set up various
+catches so that error handling is safe, whereas s7_apply_function assumes you have a catch already somewhere.
+</p>
+<p>
+s7_call_with_location passes some information to the error handler, and
+s7_call_with_catch wraps an explicit catch around a function call:
+s7_call_with_catch(sc, tag, body, err) is equivalent to (catch tag body err).
+There are many examples of these functions in clm2xen.c, ffitest.c, etc.
+</p>
+<p>The s7_apply_1 functions and its many friends are left over from long ago.  I hope to
+deprecate them someday, but currently Snd uses them to excess.  Each applies its function
+to the arguments.
+</p>
+
+<div class="shortheader" id="cdefine">Define</div>
+
+<pre class="indented">
+void s7_define(s7_scheme *sc, s7_pointer env, s7_pointer symbol, s7_pointer value);
+bool s7_is_defined(s7_scheme *sc, const char *name);
+
+/* these s7_define* functions return a symbol */
+s7_pointer s7_define_variable(s7_scheme *sc, const char *name, s7_pointer value);
+s7_pointer s7_define_variable_with_documentation(s7_scheme *sc, const char *name, s7_pointer value, const char *help);
+
+s7_pointer s7_define_constant(s7_scheme *sc, const char *name, s7_pointer value);
+s7_pointer s7_define_constant_with_documentation(s7_scheme *sc, const char *name, s7_pointer value, const char *help);
+s7_pointer s7_define_constant_with_environment(s7_scheme *sc, s7_pointer envir, const char *name, s7_pointer value);
+
+s7_pointer s7_defun(s7_scheme *sc, const char *name, s7_function fnc, 
+                    s7_int required_args, s7_int optional_args, bool rest_arg,
+		    const char *doc, s7_pointer signature, s7_pointer let, s7_safety_t type);
+
+/* the rest of these s7_define|make_*_function are simply calling s7_defun */
+s7_pointer s7_define_function(s7_scheme *sc, const char *name, s7_function fnc,
+                              s7_int required_args, s7_int optional_args, bool rest_arg, const char *doc);
+
+s7_pointer s7_define_safe_function(s7_scheme *sc, const char *name, s7_function fnc,
+                                   s7_int required_args, s7_int optional_args, bool rest_arg, const char *doc);
+
+s7_pointer s7_define_typed_function(s7_scheme *sc, const char *name, s7_function fnc,
+				    s7_int required_args, s7_int optional_args, bool rest_arg,
+				    const char *doc, s7_pointer signature);
+
+s7_pointer s7_define_unsafe_typed_function(s7_scheme *sc, const char *name, s7_function fnc,
+					   s7_int required_args, s7_int optional_args, bool rest_arg,
+					   const char *doc, s7_pointer signature);
+
+s7_pointer s7_define_semisafe_typed_function(s7_scheme *sc, const char *name, s7_function fnc,
+					     s7_int required_args, s7_int optional_args, bool rest_arg,
+					     const char *doc, s7_pointer signature);
+
+void s7_define_function_star(s7_scheme *sc, const char *name, s7_function fnc,
+                             const char *arglist, const char *doc);
+
+void s7_define_safe_function_star(s7_scheme *sc, const char *name, s7_function fnc,
+                                  const char *arglist, const char *doc);
+
+void s7_define_typed_function_star(s7_scheme *sc, const char *name, s7_function fnc,
+                                   const char *arglist, const char *doc, s7_pointer signature);
+
+s7_pointer s7_define_macro(s7_scheme *sc, const char *name, s7_function fnc,
+                           s7_int required_args, s7_int optional_args, bool rest_arg, const char *doc);
+
+s7_pointer s7_define_expansion(s7_scheme *sc, const char *name, s7_function fnc, 
+	                       s7_int required_args, s7_int optional_args, bool rest_arg, const char *doc);
+
+/* s7_make* functions return a function */
+s7_pointer s7_make_function(s7_scheme *sc, const char *name, s7_function fnc,
+                            s7_int required_args, s7_int optional_args, bool rest_arg, const char *doc);
+
+s7_pointer s7_make_safe_function(s7_scheme *sc, const char *name, s7_function fnc,
+                                 s7_int required_args, s7_int optional_args, bool rest_arg, const char *doc);
+
+s7_pointer s7_make_typed_function(s7_scheme *sc, const char *name, s7_function f,
+				  s7_int required_args, s7_int optional_args, bool rest_arg,
+                                  const char *doc, s7_pointer signature);
+
+s7_pointer s7_make_typed_function_with_environment(s7_scheme *sc, const char *name, s7_function f,
+				  s7_int required_args, s7_int optional_args, bool rest_arg,
+                                  const char *doc, s7_pointer signature, s7_pointer envir);
+
+s7_pointer s7_make_function_star(s7_scheme *sc, const char *name, s7_function fnc,
+                                 const char *arglist, const char *doc);
+
+s7_pointer s7_make_safe_function_star(s7_scheme *sc, const char *name, s7_function fnc,
+                                 const char *arglist, const char *doc);
+
+bool s7_is_dilambda(s7_pointer obj);
+
+s7_pointer s7_dilambda(s7_scheme *sc,
+		       const char *name,
+		       s7_pointer (*getter)(s7_scheme *sc, s7_pointer args),
+		       s7_int get_req_args, s7_int get_opt_args,
+		       s7_pointer (*setter)(s7_scheme *sc, s7_pointer args),
+		       s7_int set_req_args, s7_int set_opt_args,
+		       const char *documentation);
+
+s7_pointer s7_typed_dilambda(s7_scheme *sc,
+		       const char *name,
+		       s7_pointer (*getter)(s7_scheme *sc, s7_pointer args),
+		       s7_int get_req_args, s7_int get_opt_args,
+		       s7_pointer (*setter)(s7_scheme *sc, s7_pointer args),
+		       s7_int set_req_args, s7_int set_opt_args,
+		       const char *documentation,
+ 		       s7_pointer get_sig, s7_pointer set_sig);
+
+s7_pointer s7_dilambda_with_environment(s7_scheme *sc, s7_pointer envir,
+		       const char *name,
+		       s7_pointer (*getter)(s7_scheme *sc, s7_pointer args),
+		       s7_int get_req_args, s7_int get_opt_args,
+		       s7_pointer (*setter)(s7_scheme *sc, s7_pointer args),
+	               s7_int set_req_args, s7_int set_opt_args,
+		       const char *documentation);
+</pre>
+<p>The s7_define* functions add a symbol and its binding to either the top-level (global) environment
+or, in s7_define, the 'env' passed as the second argument.  Use s7_set_shadow_rootlet to
+import the current let into rootlet.
+</p>
+<pre class="indented">
+s7_define(s7, s7_curlet(s7), s7_make_symbol(s7, "var"), s7_make_integer(s7, 123));
+</pre>
+<p>adds the variable named var to the current environment with the value 123.
+Scheme code can then refer to var just as if we had said <code>(define var 123)</code>
+in Scheme.
+</p>
+<p>s7_define_variable is a wrapper for s7_define; the code above could be:
+</p>
+<pre class="indented">
+s7_define_variable(s7, "var", s7_make_integer(s7, 123)); /* (define var 123) */
+</pre>
+<p>except that s7_define_variable assumes you want var in rootlet.
+</p>
+<p>s7_define_constant is another wrapper for s7_define; it makes the variable immutable:
+</p>
+<pre class="indented">
+s7_define_constant(sc, "var", s7_f(sc));  /* (define-constant var 123) */
+</pre>
+<p>Most of the s7_define* functions return the name as a symbol; this reflects the way
+define worked in s7 until 2014.  Backwards compatibility...
+</p>
+
+<p>The rest of the functions in this section deal with tieing C functions into Scheme.
+s7_make_function creates (and returns) a Scheme function object from the s7_function 'fnc'.
+An s7_function is a C function of the form <code>s7_pointer func(s7_scheme *sc, s7_pointer args)</code>.
+The new function's name is 'name', it requires 'required_args' arguments,
+it can accept 'optional_args' other arguments, and if 'rest_arg' is true, it accepts
+any number of trailing optional arguments (that is, it isn't a true :rest argument for grubby historical reasons).
+The function's documentation is 'doc'.
+</p>
+<p>Leaving aside the value returned, s7_define_function is the same as s7_make_function, but it also adds 'name' (as a symbol) to the
+global environment, with the function as its value.  For example, the Scheme
+function 'car' is essentially:
+</p>
+<pre class="indented">
+s7_pointer g_car(s7_scheme *sc, s7_pointer args) {return(s7_car(s7_car(args)));} /* args is a list of args */
+</pre>
+<p>It is bound to the name "car":
+</p>
+<pre class="indented">
+s7_define_function(sc, "car", g_car, 1, 0, false, "(car obj)");
+</pre>
+<p>which says that car has one required argument, no optional arguments, and no "rest" argument.
+</p>
+<p>The "safe" and "unsafe" versions of these functions refer to the s7 optimizer.
+If it knows a function is safe, it can more thoroughly optimize the expression it is in.
+"Safe" here means the function does not call the evaluator itself (via s7_apply_function for example)
+and does not mess with s7's stack.
+</p>
+<p>The "typed" versions refer to the function's signature. Since "car" is safe, and has a signature,
+it is defined in s7.c:
+</p>
+<pre class="indented">
+s7_define_typed_function(sc, "car", g_car, 1, 0, false, H_car, Q_car);
+</pre>
+<p>Here unless you use s7_define_unsafe_typed_function, the function is assumed to be safe.
+We've given it the Scheme name "car", which invokes the C function g_car.  It takes one
+required argument, and no optional or rest arguments.  Its documentation is H_car, and
+its signature is Q_car.  The latter is <code>s7_make_signature(sc, 2, sc-&gt;T, sc-&gt;is_pair_symbol)</code>
+which says that car takes a pair argument, and returns any type object.
+</p>
+<p>s7_defun underlies the clutter of functions above.  All the arguments are as above except
+s7_safety_t type.  It can be s7_unsafe, s7_semisafe, or s7_safe.  If both the name and let
+arguments are NULL, you get the equivalent of s7_make_*_function; that is name is not defined
+in the let.  In every case, you get the new function back (not a symbol).
+</p>
+
+<p>s7_define_macro defines a Scheme macro; its arguments are not evaluated (unlike a function),
+but its returned value (assumed to be some sort of Scheme expression) is evaluated.  It returns a symbol.
+s7_define_expansion is the same, but returns a read-time macro (an "expansion" in s7 jargon).
+</p>
+
+<p>The function_star functions are similar, but in this case we pass the argument list
+as a string, as it would appear in Scheme.
+s7 makes sure the arguments  are ordered correctly and have the specified defaults before calling the C function.
+</p>
+<pre class="indented">
+s7_define_function_star(sc, "a-func", a_func, "arg1 (arg2 32)", "an example of C define*");
+</pre>
+<p>Now in Scheme, (a-func :arg1 2) calls the C function a_func with the arguments 2 and 32.
+</p>
+<p>Finally, the dilambda function define Scheme dilambda, just as the Scheme dilambda function does.
+The dax example above gives read/write access to its x field via:
+</p>
+<pre class="indented">
+s7_define_variable(s7, "dax-x", s7_dilambda(s7, "dax-x", dax_x, 1, 0, set_dax_x, 2, 0, "dax x field"));
+</pre>
+
+
+
+<div class="shortheader" id="cfunctioninfo">Function info</div>
+
+<pre class="indented">
+const char *s7_documentation(s7_scheme *sc, s7_pointer p);
+const char *s7_set_documentation(s7_scheme *sc, s7_pointer symbol, const char *new_doc);
+const char *s7_help(s7_scheme *sc, s7_pointer obj);
+
+s7_pointer s7_arity(s7_scheme *sc, s7_pointer obj);
+bool s7_is_aritable(s7_scheme *sc, s7_pointer obj, s7_int args);
+
+s7_pointer s7_setter(s7_scheme *sc, s7_pointer obj);
+s7_pointer s7_set_setter(s7_scheme *sc, s7_pointer obj, s7_pointer setter);
+
+s7_pointer s7_signature(s7_scheme *sc, s7_pointer func);
+s7_pointer s7_make_signature(s7_scheme *sc, s7_int len, ...);
+s7_pointer s7_make_circular_signature(s7_scheme *sc, s7_int cycle_point, s7_int len, ...);
+
+s7_pointer s7_lambda_body(s7_scheme *sc, s7_pointer p);
+s7_pointer s7_lambda_let(s7_scheme *sc, s7_pointer p);
+s7_pointer s7_lambda_parameters(s7_scheme *sc, s7_pointer p);
+s7_pointer s7_funclet(s7_scheme *sc, s7_pointer p);
+
+bool s7_is_function(s7_pointer p);
+bool s7_is_procedure(s7_pointer x);
+bool s7_is_macro(s7_scheme *sc, s7_pointer x);
+</pre>
+<p>These functions pertain mostly to functions, both those defined in Scheme and those in C.
+s7_help and s7_documentation return the documentation string associated with their argument.
+I find "documentation" tedious to type, and Snd uses "help", but other than the name,
+there isn't much difference between them.  s7_set_documentation sets the documentation string, if it can.
+</p>
+
+<p>s7_arity returns an object's arity, a cons of the number of required arguments, and the total acceptable arguments.
+s7_is_aritable returns true if the object can accept that number of args.
+</p>
+
+<p>s7_setter is the object's <a href="s7.html#pws">setter</a>, and s7_set_setter sets it, if possible.
+</p>
+
+<p>s7_signature is the object's <a href="s7.html#signature">signature</a>, a list of types (symbols like 'integer?) giving return and argument types.
+For a function defined in C, s7_make_signature and s7_make_circular_signature create the signature that is then
+associated with the function via s7_define_typed_function and its friends.
+In s7.c g_is_zero (the function that implements zero?) uses:
+</p>
+<pre class="indented">
+s7_make_signature(sc, 2, sc-&gt;is_boolean_symbol, sc-&gt;is_number_symbol); /* return a boolean, argument is a number */
+</pre>
+<p>Similarly, g_add is:
+</p>
+<pre class="indented">
+s7_make_circular_signature(sc, 0, 1, sc-&gt;is_number_symbol); /* returns a number, takes any number of numbers */
+</pre>
+<p>The two numeric arguments set the cycle start point (0-based) and the number of type symbols passed as arguments to it.
+So, char=? is:
+</p>
+<pre class="indented">
+s7_make_circular_signature(sc, 1, 2, sc-&gt;is_boolean_symbol, sc-&gt;is_char_symbol);
+</pre>
+<p>which says there are two type entries (the "2"), and the cycle starts at the second (the "1" -- it's 0-based).
+</p>
+
+<p>The s7_lambda functions only apply to functions defined in Scheme.  They return the closure body (s7_lambda_body, a list),
+its definition environment (s7_lambda_let), and its argument list (s7_lambda_parameters).  If the function is of the form
+<code>(define (f . args) ...)</code>, s7_lambda_parameters returns the symbol ('args in this case).
+s7_funclet returns the top let within the function (the let containing the argument names).
+</p>
+
+
+<div class="shortheader" id="ccobjects">C-objects</div>
+
+<pre class="indented">
+bool s7_is_c_object(s7_pointer p);
+s7_pointer s7_make_c_object(s7_scheme *sc, s7_int type, void *value);
+s7_pointer s7_make_c_object_without_gc(s7_scheme *sc, s7_int type, void *value);
+s7_pointer s7_make_c_object_with_let(s7_scheme *sc, s7_int type, void *value, s7_pointer let);
+
+s7_int s7_c_object_type(s7_pointer obj);
+void *s7_c_object_value(s7_pointer obj);
+void *s7_c_object_set_value(s7_pointer obj, void *value);
+void *s7_c_object_value_checked(s7_pointer obj, s7_int type);
+s7_pointer s7_c_object_let(s7_pointer obj);
+s7_pointer s7_c_object_set_let(s7_scheme *sc, s7_pointer obj, s7_pointer e);
+
+s7_int s7_make_c_type(s7_scheme *sc, const char *name);
+void s7_c_type_set_gc_free      (s7_scheme *sc, s7_int type, s7_pointer (*gc_free)   (s7_scheme *sc, s7_pointer obj));
+void s7_c_type_set_gc_mark      (s7_scheme *sc, s7_int type, s7_pointer (*mark)      (s7_scheme *sc, s7_pointer obj));
+void s7_c_type_set_is_equal     (s7_scheme *sc, s7_int type, s7_pointer (*is_equal)  (s7_scheme *sc, s7_pointer args));
+void s7_c_type_set_is_equivalent(s7_scheme *sc, s7_int type, s7_pointer (*is_equivalent)(s7_scheme *sc, s7_pointer args));
+void s7_c_type_set_ref          (s7_scheme *sc, s7_int type, s7_pointer (*ref)       (s7_scheme *sc, s7_pointer args));
+void s7_c_type_set_set          (s7_scheme *sc, s7_int type, s7_pointer (*set)       (s7_scheme *sc, s7_pointer args));
+void s7_c_type_set_length       (s7_scheme *sc, s7_int type, s7_pointer (*length)    (s7_scheme *sc, s7_pointer args));
+void s7_c_type_set_copy         (s7_scheme *sc, s7_int type, s7_pointer (*copy)      (s7_scheme *sc, s7_pointer args));
+void s7_c_type_set_fill         (s7_scheme *sc, s7_int type, s7_pointer (*fill)      (s7_scheme *sc, s7_pointer args));
+void s7_c_type_set_reverse      (s7_scheme *sc, s7_int type, s7_pointer (*reverse)   (s7_scheme *sc, s7_pointer args));
+void s7_c_type_set_to_list      (s7_scheme *sc, s7_int type, s7_pointer (*to_list)   (s7_scheme *sc, s7_pointer args));
+void s7_c_type_set_to_string    (s7_scheme *sc, s7_int type, s7_pointer (*to_string) (s7_scheme *sc, s7_pointer args));
+void s7_c_type_set_getter       (s7_scheme *sc, s7_int type, s7_pointer getter);
+void s7_c_type_set_setter       (s7_scheme *sc, s7_int type, s7_pointer setter);
+
+void s7_mark(s7_pointer p);
+</pre>
+
+<p>These functions create a new Scheme object type.  See <a href="#pwstype">dax</a> above for a simple example,
+s7test.scm and ffitest.c for several progressively more complicated examples.
+C-objects in Scheme usually correspond to an instance of a struct in C which you want to access from Scheme.
+The normal sequence is: define a new c-type via s7_make_c_type, call s7_c_type_set* to specialize its behavior,
+then to wrap a C object, call s7_make_c_object.
+s7_make_c_type takes an arbitrary name, used in object-&gt;string to identify the object, and returns an s7_int, the "type"
+mentioned in many of the other functions.
+</p>
+<p>s7_c_type_set_gc_free sets the function that is called by the GC when a Scheme c-object is garbage-collected.
+You normally use this to free the associated C value (the instance of the struct).  To get that value,
+call s7_c_object_value.  It returns the void* pointer that you originally passed to s7_make_c_object.
+See free_dax in the <a href="#pwstype">dax</a> example.
+</p>
+<p>s7_c_type_set_gc_mark sets the function that is called by the GC during its marking phase.  Any s7_pointer
+value local to your C struct should be marked explicitly at this time, or the GC will free it.  Use s7_mark
+for this (see mark_dax).  Don't allocate any s7 objects in the mark function (otherwise you'll get a recursive call of the GC).
+</p>
+<p>s7_c_type_set_is_equal and s7_c_type_set_is_equivalent set the function called when s7 sees a c-object of the
+current type as an argument to equal? or equivalent?.  When called, these functions can assume that the
+first argument is a c-object of the current type, but the second argument can be anything (see dax_is_equal).
+</p>
+<p>s7_c_type_set_ref and s7_c_type_set_set are called when the c-object is treated as an applicable object
+in Scheme.  That is, <code>(object ...)</code> in Scheme calls the function set as the "ref" function, and
+<code>(set! (object ...) new-value)</code> calls the "set" function.  The arguments in the set! form are
+passed as a flattened list.
+</p>
+<p>The rest of the s7_c_type_set* functions set the functions called when the c-object is an argument to
+length (s7_c_type_set_length), copy (s7_c_type_set_copy), fill! (s7_c_type_set_fill), reverse (s7_c_type_set_reverse),
+object-&gt;string (s7_c_type_set_to_string), and internally by map and a few other cases, s7_c_type_set_to_list.
+For the copy function, either the first or second argument can be a c-object of the given type.
+The getter and setter functions are optimizer helpers.
+</p>
+<p>s7_c_object_value_checked is like s7_c_object, but it first checks that the object type matches the given type.
+</p>
+<p>s7_c_object_let and s7_c_object_set_let manage the c-object's local environment.
+These two functions need to check that they are passed the correct number of arguments.
+See the block object in s7test.scm.  The c_object_let provides methods normally.
+In Snd, marks can be passed into Scheme; the setup code is:
+</p>
+<pre class="indented">
+  static s7_pointer g_mark_methods;
+  ...
+  g_mark_methods = s7_openlet(s7,
+                     s7_inlet(s7, s7_list(s7, 2, s7_make_symbol(s7, "object-&gt;let"),
+                                                 mark_to_let_func)));
+  s7_gc_protect(s7, g_mark_methods);
+  xen_mark_tag = s7_make_c_type(s7, "&lt;mark&gt;");
+  s7_c_type_set_gc_free(s7, xen_mark_tag, s7_xen_mark_free);
+  s7_c_type_set_is_equal(s7, xen_mark_tag, s7_xen_mark_is_equal);
+  s7_c_type_set_copy(s7, xen_mark_tag, s7_xen_mark_copy);
+  s7_c_type_set_to_string(s7, xen_mark_tag, g_xen_mark_to_string);
+</pre>
+<p>The mark object's let (g_mark_methods) has a method for object-&gt;let.
+It is tied into each mark object:
+</p>
+<pre class="indented">
+s7_pointer m;
+m = s7_make_c_object(s7, xen_mark_tag, mx);  /* mx is the C-side value */
+s7_c_object_set_let(s7, m, g_mark_methods);
+</pre>
+<p>and now if you type (object-&gt;let mark) in Snd's listener (where "mark" is
+an appropriate mark of course), object-&gt;let calls the object's object-&gt;let method.
+Don't forget to GC-protect the let!
+</p>
+<p>s7_make_c_object_without_gc makes a c-object of the given type, but the gc_free function
+won't be called when the s7_cell that holds the C data is freed for reuse.
+</p>
+
+<div class="shortheader" id="cio">IO</div>
+<pre class="indented">
+bool s7_is_input_port(s7_scheme *sc, s7_pointer p);
+bool s7_is_output_port(s7_scheme *sc, s7_pointer p);
+void s7_close_input_port(s7_scheme *sc, s7_pointer p);
+void s7_close_output_port(s7_scheme *sc, s7_pointer p);
+bool s7_flush_output_port(s7_scheme *sc, s7_pointer p); /* false=flush lost data */
+const char *s7_port_filename(s7_scheme *sc, s7_pointer x);
+s7_int s7_port_line_number(s7_scheme *sc, s7_pointer p);
+
+s7_pointer s7_open_input_file(s7_scheme *sc, const char *name, const char *mode);
+s7_pointer s7_open_output_file(s7_scheme *sc, const char *name, const char *mode);
+
+s7_pointer s7_open_input_string(s7_scheme *sc, const char *input_string);
+s7_pointer s7_open_output_string(s7_scheme *sc);
+const char *s7_get_output_string(s7_scheme *sc, s7_pointer out_port);
+s7_pointer s7_output_string(s7_scheme *sc, s7_pointer out_port);
+
+typedef enum {S7_READ, S7_READ_CHAR, S7_READ_LINE, S7_PEEK_CHAR, S7_IS_CHAR_READY, S7_NUM_READ_CHOICES} s7_read_t;
+s7_pointer s7_open_output_function(s7_scheme *sc, void (*function)(s7_scheme *sc, uint8_t c, s7_pointer port));
+s7_pointer s7_open_input_function(s7_scheme *sc, s7_pointer (*function)(s7_scheme *sc, s7_read_t read_choice, s7_pointer port));
+
+s7_pointer s7_read_char(s7_scheme *sc, s7_pointer port);
+s7_pointer s7_peek_char(s7_scheme *sc, s7_pointer port);
+s7_pointer s7_write_char(s7_scheme *sc, s7_pointer c, s7_pointer port);
+s7_pointer s7_write(s7_scheme *sc, s7_pointer obj, s7_pointer port);
+s7_pointer s7_display(s7_scheme *sc, s7_pointer obj, s7_pointer port);
+void s7_newline(s7_scheme *sc, s7_pointer port);
+const char *s7_format(s7_scheme *sc, s7_pointer args);
+s7_pointer s7_object_to_string(s7_scheme *sc, s7_pointer arg, bool use_write);
+char *s7_object_to_c_string(s7_scheme *sc, s7_pointer obj);
+
+s7_pointer s7_current_input_port(s7_scheme *sc);
+s7_pointer s7_set_current_input_port(s7_scheme *sc, s7_pointer p);
+s7_pointer s7_current_output_port(s7_scheme *sc);
+s7_pointer s7_set_current_output_port(s7_scheme *sc, s7_pointer p);
+s7_pointer s7_current_error_port(s7_scheme *sc);
+s7_pointer s7_set_current_error_port(s7_scheme *sc, s7_pointer port);
+
+s7_pointer s7_read(s7_scheme *sc, s7_pointer port);
+</pre>
+<p>Most of these correspond closely to the similarly named scheme function.  s7_port_filename
+returns the file associated with a file port.  s7_port_line_number returns position of the
+reader in an input file port.  The "use_write" parameter to s7_object_to_string refers
+to the write/display choice in scheme.  It can be #t == write, #f == display, or :readable.
+The string returned by s7_object_to_c_string should be freed by the caller.
+s7_output_string is the same as s7_get_output_string except that it returns an s7 string,
+not a C string.
+</p>
+<p>s7_open_input_function and s7_open_output_function
+call their "function" argument when input or output is requested.  The "read_choice"
+argument specifies to that function which of the input scheme functions called it.
+The intent of these two input functions is to give you complete control over IO.
+In the case of an input_function:
+</p>
+<pre class="indented">
+static s7_pointer my_read(s7_scheme *sc, s7_read_t peek, s7_pointer port)
+{
+  /* this function should handle input according to the peek choice */
+  return(s7_make_character(sc, '0'));
+}
+
+s7_pointer port;
+s7_int gc_loc;
+uint8_t c;
+port = s7_open_input_function(sc, my_read);
+gc_loc = s7_gc_protect(sc, port);
+c = s7_character(s7_read_char(sc, p1)); /* my_read "peek" == S7_READ_CHAR */
+if (last_c != '0')
+   fprintf(stderr, "c: %c\n", c);
+s7_gc_unprotect_at(sc, gc_loc);
+</pre>
+
+
+<div class="shortheader" id="clets">Lets</div>
+<pre class="indented">
+s7_pointer s7_rootlet(s7_scheme *sc);
+s7_pointer s7_shadow_rootlet(s7_scheme *sc);
+s7_pointer s7_set_shadow_rootlet(s7_scheme *sc, s7_pointer let);
+
+s7_pointer s7_curlet(s7_scheme *sc);
+s7_pointer s7_set_curlet(s7_scheme *sc, s7_pointer e);
+
+s7_pointer s7_outlet(s7_scheme *sc, s7_pointer e);
+s7_pointer s7_sublet(s7_scheme *sc, s7_pointer let, s7_pointer bindings);
+s7_pointer s7_inlet(s7_scheme *sc, s7_pointer bindings);
+s7_pointer s7_varlet(s7_scheme *sc, s7_pointer let, s7_pointer symbol, s7_pointer value);
+
+s7_pointer s7_let_to_list(s7_scheme *sc, s7_pointer let);
+bool s7_is_let(s7_pointer e);
+s7_pointer s7_let_ref(s7_scheme *sc, s7_pointer let, s7_pointer symbol);
+s7_pointer s7_let_set(s7_scheme *sc, s7_pointer let, s7_pointer symbol, s7_pointer val);
+
+s7_pointer s7_starlet_ref(s7_scheme *sc, s7_pointer sym);
+s7_pointer s7_starlet_set(s7_scheme *sc, s7_pointer sym, s7_pointer new_value);
+/* the old confusing names for the same functions: */
+  s7_pointer s7_let_field_ref(s7_scheme *sc, s7_pointer symbol);
+  s7_pointer s7_let_field_set(s7_scheme *sc, s7_pointer symbol, s7_pointer new_value);
+
+s7_pointer s7_openlet(s7_scheme *sc, s7_pointer e);
+bool s7_is_openlet(s7_pointer e);
+s7_pointer s7_method(s7_scheme *sc, s7_pointer object, s7_pointer method);
+
+/* these might go away someday */
+s7_pointer s7_slot(s7_scheme *sc, s7_pointer symbol);
+s7_pointer s7_slot_value(s7_pointer slot);
+s7_pointer s7_slot_set_value(s7_scheme *sc, s7_pointer slot, s7_pointer value);
+s7_pointer s7_make_slot(s7_scheme *sc, s7_pointer env, s7_pointer symbol, s7_pointer value);
+void s7_slot_set_real_value(s7_scheme *sc, s7_pointer slot, s7_double value);
+</pre>
+<p>Many of these are the same as the corresponding scheme function: s7_rootlet, s7_curlet, s7_outlet,
+s7_sublet, s7_inlet, s7_varlet, s7_let_to_list, s7_is_let, s7_let_ref, s7_let_set, s7_openlet,
+and s7_is_openlet.
+</p>
+<p>s7_starlet_ref and s7_starlet_set refer to *s7*, the let that holds various s7 settings.
+To get the current default print-length,
+</p>
+<pre class="indented">
+s7_integer(s7_starlet_ref(s7, s7_make_symbol(s7, "print-length")))
+</pre>
+<p>s7_method looks for a field in "object" with the name "method", a symbol.
+For example, in clm2xen.c, if mus-copy is called on an object that Snd does not
+immediately recognize (i.e. a generator), it looks for a mus-copy method, and
+if found, Snd calls it:
+</p>
+<pre class="indented">
+s7_pointer func;
+func = s7_method(s7, gen, s7_make_symbol(s7, "mus-copy"));
+if (func != s7_undefined(s7))
+  return(s7_apply_function(s7, func, s7_list(s7, 1, gen)));
+</pre>
+<p>The object searched can be anything that has an associated let: a c-object,
+a function or macro, a c-pointer, or of course a let.
+</p>
+<p>s7_set_curlet and the slot functions might go away someday.  They are currently used
+in Snd.  For the adventurous however, here's a sketchy description.
+A slot in s7 is a location in a let (a variable binding in an environment to use more standard terminology).
+s7_make_slot creates a slot in "env" with the given symbol and value.  s7_slot_value returns the value;
+s7_slot_set_value sets the value; s7_slot_set_real_value sets the mutable real value's numerical value.
+s7_slot takes a symbol and tries to find its currently active slot.  s7_set_curlet sets curlet, returning
+the previous curlet.
+</p>
+<p>s7_shadow_rootlet and s7_set_shadow_rootlet make it easier to import a let into rootlet.  This is also aimed
+at code that is defining lots of functions and variables, using the default functions like s7_define_variable
+that place things in the rootlet, but the code actually wants all those objects stored
+in a let other than rootlet.
+</p>
+<pre class="indented">
+s7_pointer cur_env, old_shadow;
+cur_env = s7_curlet(sc);
+old_shadow = s7_set_shadow_rootlet(sc, cur_env);
+/* define everything here */
+s7_set_shadow_rootlet(sc, old_shadow);
+</pre>
+<p>s7_set_shadow_rootlet returns the previous shadow rootlet,
+so this turns the current environment into a shadow rootlet while defining functions, then restores
+the old rootlet.
+Similarly notcurses_s7.c places everything in the *notcurses* let,
+but uses s7_set_shadow_rootlet to make these available in scheme as if they were in the rootlet:
+</p>
+<pre class="indented">
+  s7_pointer notcurses_let, old_shadow;
+  s7_define_constant(sc, "*notcurses*", notcurses_let = s7_inlet(sc, s7_nil(sc)));
+  old_shadow = s7_set_shadow_rootlet(sc, notcurses_let);
+  /* ... here we have all the s7_defines ... */
+  s7_set_shadow_rootlet(sc, old_shadow);
+</pre>
+
+<div class="shortheader" id="csymbols">Symbols</div>
+<pre class="indented">
+bool s7_is_symbol(s7_pointer p);
+const char *s7_symbol_name(s7_pointer p);
+s7_pointer s7_make_symbol(s7_scheme *sc, const char *name);
+s7_pointer s7_gensym(s7_scheme *sc, const char *prefix);
+
+bool s7_is_keyword(s7_pointer obj);
+s7_pointer s7_make_keyword(s7_scheme *sc, const char *key);
+s7_pointer s7_keyword_to_symbol(s7_scheme *sc, s7_pointer key);
+
+s7_pointer s7_name_to_value(s7_scheme *sc, const char *name);
+s7_pointer s7_symbol_value(s7_scheme *sc, s7_pointer sym);
+s7_pointer s7_symbol_set_value(s7_scheme *sc, s7_pointer sym, s7_pointer val);
+s7_pointer s7_symbol_local_value(s7_scheme *sc, s7_pointer sym, s7_pointer local_env);
+s7_pointer s7_symbol_initial_value(s7_pointer symbol); /* #_symbol's value */
+s7_pointer s7_symbol_set_initial_value(s7_scheme *sc, s7_pointer symbol, s7_pointer value);
+
+s7_pointer s7_symbol_table_find_name(s7_scheme *sc, const char *name);
+bool s7_for_each_symbol_name(s7_scheme *sc, bool (*symbol_func)(const char *symbol_name, void *data), void *data);
+bool s7_for_each_symbol(s7_scheme *sc,      bool (*symbol_func)(const char *symbol_name, void *data), void *data);
+</pre>
+<p>s7_is_symbol corresponds to scheme's symbol?, s7_symbol_name to symbol-&gt;string,
+s7_make_symbol is string-&gt;symbol,
+s7_gensym to gensym.  The gensym prefix is the optional argument to gensym in scheme.
+By default the prefix is "gensym", so the gensym-created symbols are of the form {gensym}-nnn
+where nnn is some number. s7_is_keyword is keyword?, s7_make_keyword is string-&gt;keyword,
+and s7_keyword_to_symbol is keyword-&gt;symbol.
+</p>
+<p>Normal symbols, and keywords do not need to be garbage-protected, but gensyms do.
+</p>
+<p>s7_symbol_to_value finds the current binding of the symbol (using its string name),
+and returns its value, similar to symbol-&gt;value.  To specify the environment in which to
+lookup the symbol, use s7_symbol_local_value.  s7_symbol_set_value sets the value of the
+symbol in its current binding.
+</p>
+<p>s7_symbol_table_find_name finds the symbol given its name.  s7_make_symbol is the same
+if the symbol already exists, but s7_symbol_find_by_name returns NULL if there isn't any
+symbol by that name.
+s7_for_each_symbol_name and s7_for_each_symbol traverse the symbol
+table, calling "symbol_func" on each symbol.  symbol_func is a boolean function that
+takes as arguments the symbol name and the void* data pointer.  The latter can carry
+along whatever state your function needs.  s7_for_each_symbol_name also includes some
+s7 constants like #f.
+</p>
+<p>The C declaration above says s7_for_each_symbol is a C function that returns a boolean,
+and takes three arguments, an s7_scheme* pointer, a function (symbol_func), and a void* pointer
+(data).  The function passed (symbol_func) also returns a boolean, and takes two arguments, a char* (name),
+and the same void* pointer that was passed to s7_symbol_for_each.  If symbol_func returns true,
+the outer function immediately returns true, ending the symbol table traversal.
+Sketched in scheme, it might be:
+</p>
+<pre class="indented">
+(define (s7_for_each_symbol s7 symbol_func data)
+  (call-with-exit
+    (lambda (return)
+      (for-each
+        (lambda (symbol-name)
+          (if (symbol_func symbol-name data)
+              (return #t)))
+        (symbol-table))
+      #f)))
+</pre>
+<p>An example is snd-completion.c.
+</p>
+
+
+<div class="shortheader" id="cnumbers">Numbers</div>
+<pre class="indented">
+bool s7_is_number(s7_pointer p);
+char *s7_number_to_string(s7_scheme *sc, s7_pointer obj, s7_int radix);
+
+bool s7_is_integer(s7_pointer p);
+s7_int s7_integer(s7_pointer p);
+s7_pointer s7_make_integer(s7_scheme *sc, s7_int num);
+s7_int s7_number_to_integer(s7_scheme *sc, s7_pointer x);
+s7_int s7_number_to_integer_with_caller(s7_scheme *sc, s7_pointer x, const char *caller);
+
+bool s7_is_real(s7_pointer p);
+s7_double s7_real(s7_pointer p);
+s7_pointer s7_make_real(s7_scheme *sc, s7_double num);
+s7_pointer s7_make_mutable_real(s7_scheme *sc, s7_double n);
+s7_double s7_number_to_real(s7_scheme *sc, s7_pointer x);
+s7_double s7_number_to_real_with_caller(s7_scheme *sc, s7_pointer x, const char *caller);
+s7_double s7_number_to_real_with_location(s7_scheme *sc, s7_pointer x, s7_pointer caller);
+
+bool s7_is_rational(s7_pointer arg);
+bool s7_is_ratio(s7_pointer arg);
+s7_pointer s7_make_ratio(s7_scheme *sc, s7_int a, s7_int b);
+s7_pointer s7_rationalize(s7_scheme *sc, s7_double x, s7_double error);
+s7_int s7_numerator(s7_pointer x);
+s7_int s7_denominator(s7_pointer x);
+
+bool s7_is_complex(s7_pointer arg);
+s7_pointer s7_make_complex(s7_scheme *sc, s7_double a, s7_double b);
+s7_double s7_real_part(s7_pointer z);
+s7_double s7_imag_part(s7_pointer z);
+
+s7_double s7_random(s7_scheme *sc, s7_pointer state);
+s7_pointer s7_random_state(s7_scheme *sc, s7_pointer seed);
+bool s7_is_random_state(s7_pointer p);
+s7_pointer s7_random_state_to_list(s7_scheme *sc, s7_pointer args);
+void s7_set_default_random_state(s7_scheme *sc, s7_int seed, s7_int carry);
+
+bool s7_is_bignum(s7_pointer obj);
+mpfr_t *s7_big_real(s7_pointer x);
+mpz_t *s7_big_integer(s7_pointer x);
+mpq_t *s7_big_ratio(s7_pointer x);
+mpc_t *s7_big_complex(s7_pointer x);
+s7_pointer s7_make_big_integer(s7_scheme *sc, mpz_t *val);
+s7_pointer s7_make_big_ratio(s7_scheme *sc, mpq_t *val);
+s7_pointer s7_make_big_real(s7_scheme *sc, mpfr_t *val);
+s7_pointer s7_make_big_complex(s7_scheme *sc, mpc_t *val);
+</pre>
+<p>Most of these correspond to the obvious scheme functions, so I'll
+only touch on the less-obvious cases.
+s7_make_mutable_real returns a real number object whose value can be changed directly.
+In snd-sig.c, for example, we have a C procedure that applies a scheme function to
+every sound sample in an audio file.  We do not want to create a new object for the
+scheme function's argument list on every call!  So, we start by creating the mutable real:
+</p>
+<pre class="indented">
+yp = s7_make_slot(s7, let, arg, s7_make_mutable_real(s7, 1.5));
+</pre>
+<p>"let" is the let for the evaluation, "arg" is the real's name as a symbol in that let,
+and we make its initial value 1.5 (for no particular reason). Then on every sample, we
+call the function:
+</p>
+<pre class="indented">
+s7_slot_set_real_value(s7, yp, data[kp]); /* set yp's value to data[kp] */
+data[kp] = opt_func(s7, res);             /* call opt_func */
+</pre>
+<p>s7_number_to_real returns any real number as an s7_double.  If it can't
+convert its argument, it signals an error, which is annoying because it doesn't
+know where that error occured in scheme.  So s7_number_to_real_with_caller gives
+you a way to tell it at least the caller's name.  s7_number_to_real_with_location
+is the same function, but the caller argument is a s7 symbol or string (this is much faster
+than using a char*).
+</p>
+<p>For the bignum functions, see <a href="#gmpex">Bignums in C</a>.
+</p>
+
+
+<div class="shortheader" id="clists">Lists</div>
+<pre class="indented">
+bool s7_is_pair(s7_pointer p);
+s7_pointer s7_cons(s7_scheme *sc, s7_pointer a, s7_pointer b);
+
+s7_pointer s7_car(s7_pointer p);
+s7_pointer s7_cdr(s7_pointer p);
+s7_pointer s7_set_car(s7_pointer p, s7_pointer q);
+s7_pointer s7_set_cdr(s7_pointer p, s7_pointer q);
+s7_pointer s7_cadr(s7_pointer p);
+etc...
+
+bool s7_is_list(s7_scheme *sc, s7_pointer p);
+bool s7_is_proper_list(s7_scheme *sc, s7_pointer p);
+s7_pointer s7_make_list(s7_scheme *sc, s7_int length, s7_pointer initial_value);
+s7_int s7_list_length(s7_scheme *sc, s7_pointer a);
+s7_pointer s7_list(s7_scheme *sc, s7_int num_values, ...);
+s7_pointer s7_list_nl(s7_scheme *sc, s7_int num_values, ...);
+s7_pointer s7_array_to_list(s7_scheme *sc, s7_int num_values, s7_pointer *array);
+void s7_list_to_array(s7_scheme *sc, s7_pointer list, s7_pointer *array, int32_t len);
+s7_pointer s7_list_ref(s7_scheme *sc, s7_pointer lst, s7_int num);
+s7_pointer s7_list_set(s7_scheme *sc, s7_pointer lst, s7_int num, s7_pointer val);
+
+s7_pointer s7_reverse(s7_scheme *sc, s7_pointer a);
+s7_pointer s7_append(s7_scheme *sc, s7_pointer a, s7_pointer b);
+s7_pointer s7_assoc(s7_scheme *sc, s7_pointer obj, s7_pointer lst);
+s7_pointer s7_assq(s7_scheme *sc, s7_pointer obj, s7_pointer x);
+s7_pointer s7_member(s7_scheme *sc, s7_pointer obj, s7_pointer lst);
+s7_pointer s7_memq(s7_scheme *sc, s7_pointer obj, s7_pointer x);
+bool s7_tree_memq(s7_scheme *sc, s7_pointer sym, s7_pointer tree);
+</pre>
+<p>These functions are mostly obvious: s7_car corresponds to scheme car, etc.
+s7_list_nl is a version of s7_list. s7_list will accept a list of arguments that does
+not fill the list (that is, "num_values" does not match the actual number of values),
+leaving null pointers that will later wreak havoc.  The list of arguments to s7_list_nl on the other hand must be
+null-terminated, and must match "num_values", or you'll get an error.
+s7_tree_memq is like s7_memq, but searches
+an entire tree structure. not just the top-level list.  s7_array_to_list takes
+an array of s7_pointers and returns a list of them (similar to s7_vector_to_list).
+</p>
+
+
+<div class="shortheader" id="cvectors">Vectors</div>
+<pre class="indented">
+s7_pointer s7_make_vector(s7_scheme *sc, s7_int len);
+s7_pointer s7_make_and_fill_vector(s7_scheme *sc, s7_int len, s7_pointer fill);
+s7_pointer s7_make_normal_vector(s7_scheme *sc, s7_int len, s7_int dims, s7_int *dim_info);
+bool s7_is_vector(s7_pointer p);
+
+s7_int s7_vector_length(s7_pointer vec);
+s7_int s7_vector_rank(s7_pointer vect);
+s7_int s7_vector_dimension(s7_pointer vec, s7_int dim);
+s7_pointer *s7_vector_elements(s7_pointer vec);
+s7_int s7_vector_dimensions(s7_pointer vec, s7_int *dims, s7_int dims_size);
+s7_int s7_vector_offsets(s7_pointer vec, s7_int *offs, s7_int offs_size);
+
+void s7_vector_fill(s7_scheme *sc, s7_pointer vec, s7_pointer obj);
+s7_pointer s7_vector_copy(s7_scheme *sc, s7_pointer old_vect);
+s7_pointer s7_vector_to_list(s7_scheme *sc, s7_pointer vect);
+
+s7_pointer s7_make_byte_vector(s7_scheme *sc, s7_int len, s7_int dims, s7_int *dim_info);
+uint8_t *s7_byte_vector_elements(s7_pointer vec);
+bool s7_is_byte_vector(s7_pointer p);
+uint8_t s7_byte_vector_ref(s7_pointer vec, s7_int index);
+uint8_t s7_byte_vector_set(s7_pointer vec, s7_int index, uint8_t value);
+
+s7_pointer s7_make_int_vector(s7_scheme *sc, s7_int len, s7_int dims, s7_int *dim_info);
+s7_pointer s7_make_int_vector_wrapper(s7_scheme *sc, s7_int len, s7_int *data, s7_int dims, s7_int *dim_info, bool free_data);
+s7_int *s7_int_vector_elements(s7_pointer vec);
+bool s7_is_int_vector(s7_pointer p);
+s7_int s7_int_vector_ref(s7_pointer vec, s7_int index);
+s7_int s7_int_vector_set(s7_pointer vec, s7_int index, s7_int value);
+
+s7_pointer s7_make_float_vector(s7_scheme *sc, s7_int len, s7_int dims, s7_int *dim_info);
+s7_pointer s7_make_float_vector_wrapper(s7_scheme *sc, s7_int len, s7_double *data, s7_int dims, s7_int *dim_info, bool free_data);
+s7_double *s7_float_vector_elements(s7_pointer vec);
+bool s7_is_float_vector(s7_pointer p);
+s7_double s7_float_vector_ref(s7_pointer vec, s7_int index);
+s7_double s7_float_vector_set(s7_pointer vec, s7_int index, s7_double value);
+
+s7_pointer s7_make_complex_vector(s7_scheme *sc, s7_int len, s7_int dims, s7_int *dim_info);
+s7_pointer s7_make_complex_vector_wrapper(s7_scheme *sc, s7_int len, s7_complex *data, s7_int dims, s7_int *dim_info, bool free_data);
+bool s7_is_complex_vector(s7_pointer p);
+s7_complex *s7_complex_vector_elements(s7_pointer vec);
+s7_complex s7_complex_vector_ref(s7_pointer vec, s7_int index);
+s7_complex s7_complex_vector_set(s7_pointer vec, s7_int index, s7_complex value);
+
+s7_pointer s7_vector_ref(s7_scheme *sc, s7_pointer vec, s7_int index);
+s7_pointer s7_vector_set(s7_scheme *sc, s7_pointer vec, s7_int index, s7_pointer a);
+s7_pointer s7_vector_ref_n(s7_scheme *sc, s7_pointer vector, s7_int indices, ...);
+s7_pointer s7_vector_set_n(s7_scheme *sc, s7_pointer vector, s7_pointer value, s7_int indices, ...);
+</pre>
+<p>s7_make_vector returns a one-dimensional vector of the given length; its elements are initialized to the empty list, ().
+s7_make_and_fill_vector is similar, but the initial element is set by the "fill" parameter.  This value
+is simply placed in every vector location, not copied, so if you pass a cons, then change its car,
+that change is reflected in every element of the vector.
+s7_make_normal_vector returns a possibly multidimensional inhomogenous vector (a "normal" vector, as opposed to an int-vector or a float-vector).
+</p>
+<p>s7_is_vector is the same as vector?, s7_vector_length is length.
+s7_vector_rank returns the number of dimensions in a vector, and s7_vector_dimension returns
+the size of the given dimension. s7_vector_elements returns the s7_pointer array that holds
+that vector's elements.
+s7_vector_dimensions fills "dims" with the lengths of the corresponding dimensions.
+s7_vector_offsets does the same for the successive dimensional offsets.
+In a multidimensional vector, you can get the s7_vector_elements index by summing each index * offset[dimension].
+s7_vector_to_list is vector-&gt;list.  s7_vector_fill is fill! (as applied to a vector of course), and s7_vector_copy is copy.
+</p>
+<p>s7_make_int_vector returns an int-vector.  Its elements are s7_ints (int64_t), and the array of s7_ints can be accessed
+via s7_int_vector_elements.  Similarly for float-vectors (the elements are s7_doubles which
+are C doubles), and complex-vectors (s7_complex which uses C doubles).
+s7_make_int_vector,
+s7_make_float_vector, and s7_make_complex_vector can return multidimensional vectors.  The "dims" parameter specifies
+the number of dimensions, and the "dim_info" parameter the individual dimensions.  If dims
+is 1, dim_info can be NULL.
+s7_make_float_vector_wrapper provides a way to pass a C array of doubles
+through scheme; it wraps up the array as a scheme float-vector.  Similar are s7_make_complex_vector_wrapper and
+s7_make_int_vector_wrapper.
+If the s7_make_*_vector_wrapper "free_data" parameter is true, s7 will free the "data"
+array when the float-vector is garbage-collected. In ffitest.c, the g_block example calls:
+</p>
+<pre class="indented">
+v1 = s7_make_float_vector_wrapper(sc, len, g1-&gt;data, 1, NULL, false);
+</pre>
+<p>when checking if two blocks are equivalent.  Since this data is actually being shared
+with a block object, we don't want s7 to free it when the g_blocks_are_equivalent function
+is done.  g1-&gt;data is freed by g_block_free when the c-object is garbage collected.
+</p>
+<p>s7_vector_ref and s7_vector_set apply to one-dimensional vectors; the "_n" cases
+apply to multidimensional cases.  All four functions can be used on any type of vector.
+</p>
+<p>s7_make_complex_vector_wrapper creates a complex-vector that accesses data
+allocated elsewhere, for example a gsl_vector_complex (see s7test.scm).
+</p>
+
+
+<div class="shortheader" id="ccpointers">C-pointers</div>
+<pre class="indented">
+bool s7_is_c_pointer(s7_pointer arg);
+bool s7_is_c_pointer_of_type(s7_pointer arg, s7_pointer type);
+void *s7_c_pointer(s7_pointer p);
+void *s7_c_pointer_with_type(s7_scheme *sc, s7_pointer p, s7_pointer expected_type, const char *caller, s7_int argnum);
+s7_pointer s7_make_c_pointer(s7_scheme *sc, void *ptr);
+s7_pointer s7_make_c_pointer_with_type(s7_scheme *sc, void *ptr, s7_pointer type, s7_pointer info);
+s7_pointer s7_make_c_pointer_wrapper_with_type(s7_scheme *sc, void *ptr, s7_pointer type, s7_pointer info);
+s7_pointer s7_c_pointer_type(s7_pointer p);
+</pre>
+<p>These functions are equivalent to s7's c-pointer?, c-pointer, and c-pointer-type.
+C-pointers in s7 are aimed primarily at passing uninterpreted C pointers through
+s7 from one C function to another.
+The "type" field can hold a type
+indication, useful in debugging.  s7_c_pointer_of_type checks that the c-pointer's
+type field matches the type passed as the second argument. As a convenience,
+s7_c_pointer_with_type combines s7_c_pointer with s7_is_c_pointer_of_type,
+calling s7_error if the types don't match.
+Nothing else in s7 assumes the type field is actually a type symbol, so you
+can use the type and info fields for any purpose.
+s7_make_c_pointer_wrapper_with_type is akin to s7_make_string_wrapper (see below).
+It creates a temporary c_pointer object outside the heap and GC.
+</p>
+
+
+<div class="shortheader" id="cstrings">Strings</div>
+
+<pre class="indented">
+bool s7_is_string(s7_pointer p);
+const char *s7_string(s7_pointer p);
+s7_pointer s7_make_string(s7_scheme *sc, const char *str);
+s7_pointer s7_make_string_with_length(s7_scheme *sc, const char *str, s7_int len);
+s7_pointer s7_make_string_wrapper(s7_scheme *sc, const char *str);
+s7_pointer s7_make_string_wrapper_with_length(s7_scheme *sc, const char *str, s7_int len);
+s7_pointer s7_make_permanent_string(s7_scheme *sc, const char *str);
+s7_pointer s7_make_semipermanent_string(s7_scheme *sc, const char *str);
+s7_int s7_string_length(s7_pointer str);
+</pre>
+<p>These handle s7 strings.  s7_is_string corresponds to scheme's string?,
+and s7_string_length to scheme's string-length. s7_string returns the scheme string's value as a C string.
+Don't free the returned string!  s7_make_string takes a C string, and returns its scheme
+equivalent.  s7_make_string_with_length is the same, but it is faster because you pass the
+new string's length (s7_make_string has to use strlen).
+s7_make_permanent_string returns a scheme string that is not in the heap; it will never be GC'd or freed by s7.
+s7_make_semipermanent_string is similar, but the string will be freed if you call s7_free.
+s7_make_string_wrapper creates a temporary string.  This saves the overhead of getting a free cell
+from the heap and later GC-ing it, but the string may be reused at any time.  It is useful as
+an argument to s7_call and similar functions where you know no other strings will be needed
+during that call.  s7_make_string_wrapper_with_length is the same but passes in the string length.
+</p>
+
+
+<div class="shortheader" id="ccharacters">Characters</div>
+
+<pre class="indented">
+bool s7_is_character(s7_pointer p);
+uint8_t s7_character(s7_pointer p);
+s7_pointer s7_make_character(s7_scheme *sc, uint8_t c);
+</pre>
+
+<p>s7_is_character is equivalent to character?.  s7_character returns the unsigned char held by the s7 object p,
+and s7_make_character returns an s7 object holding the unsigned char c.
+</p>
+
+
+<div class="shortheader" id="chashtables">Hash-tables</div>
+
+<pre class="indented">
+bool s7_is_hash_table(s7_pointer p);
+s7_pointer s7_make_hash_table(s7_scheme *sc, s7_int size);
+s7_pointer s7_hash_table_ref(s7_scheme *sc, s7_pointer table, s7_pointer key);
+s7_pointer s7_hash_table_set(s7_scheme *sc, s7_pointer table, s7_pointer key, s7_pointer value);
+s7_int s7_hash_code(s7_scheme *sc, s7_pointer obj, s7_pointer eqfunc);
+</pre>
+<p>These functions are the C-side equivalent of hash-table?, make-hash-table, hash-table-ref,
+and hash-table-set!.
+</p>
+
+
+<div class="shortheader" id="citerators">Iterators</div>
+
+<pre class="indented">
+s7_pointer s7_make_iterator(s7_scheme *sc, s7_pointer e);
+bool s7_is_iterator(s7_pointer obj);
+bool s7_iterator_is_at_end(s7_scheme *sc, s7_pointer iter);
+s7_pointer s7_iterate(s7_scheme *sc, s7_pointer iter);
+</pre>
+<p>These are the C equivalents of make-iterator, iterator?, iterator-at-end?, and iterate.
+</p>
+
+
+<div class="shortheader" id="chooks">Hooks</div>
+<pre class="indented">
+s7_pointer s7_hook_functions(s7_scheme *sc, s7_pointer hook);
+s7_pointer s7_hook_set_functions(s7_scheme *sc, s7_pointer hook, s7_pointer functions);
+</pre>
+<p>These access the list of functions associated with a hook.  See <a href="s7.html#hooks">hooks</a>
+for a discussion of hooks, and <a href="#testhook">C and Scheme Hooks</a> for a short example.
+The scheme equivalent is hook-functions (a dilambda).
+</p>
+
+
+<div class="shortheader" id="cconstants">Constants</div>
+<pre class="indented">
+s7_pointer s7_f(s7_scheme *sc);
+s7_pointer s7_t(s7_scheme *sc);
+s7_pointer s7_nil(s7_scheme *sc);
+s7_pointer s7_undefined(s7_scheme *sc);
+s7_pointer s7_unspecified(s7_scheme *sc);
+s7_pointer s7_eof_object(s7_scheme *sc);
+
+bool s7_is_unspecified(s7_scheme *sc, s7_pointer val);
+bool s7_is_null(s7_scheme *sc, s7_pointer p);
+bool s7_is_boolean(s7_pointer x);
+
+bool s7_boolean(s7_scheme *sc, s7_pointer x);
+s7_pointer s7_make_boolean(s7_scheme *sc, bool x);
+
+bool s7_is_immutable(s7_pointer p);
+s7_pointer s7_set_immutable(s7_scheme *sc, s7_pointer p);
+</pre>
+<p>These return the standard scheme or s7 constants: #f, #t, (), #&lt;undefined&gt;, #&lt;unspecified&gt;, and #&lt;eof&gt;.
+Also the s7 function unspecified?, and the scheme functions null?, and boolean?.  s7_make_boolean
+returns #t or #f depending on its argument.
+</p>
+<p>s7_set_immutable makes its argument immutable, and s7_is_immutable returns true if its argument is immutable.
+They parallel s7's immutable! and immutable?.
+</p>
+
+
+<div class="shortheader" id="coptimizations">Optimization</div>
+
+<pre class="indented">
+typedef s7_double (*s7_d_t)(void);
+void s7_set_d_function(s7_scheme *sc, s7_pointer f, s7_d_t df);
+s7_d_t s7_d_function(s7_pointer f);
+etc...
+
+s7_pfunc s7_optimize(s7_scheme *sc, s7_pointer expr);
+</pre>
+
+<p>
+These functions tell s7 to call a foreign function directly, without any scheme-related
+overhead.  The function to be called in this manner needs to take the form of one of the s7_*_t functions in s7.h.
+For example,
+one way to call + is to pass it two s7_double arguments and get an s7_double back.  This is the
+s7_d_dd_t function (the first letter gives the return type, the rest give successive argument types,
+d=double, i=integer, v=c_object, p=s7_pointer).
+We tell s7 about it via s7_set_d_dd_function.  Whenever s7's optimizer encounters + with two arguments
+that it (the optimizer) knows are s7_doubles, in a context where an s7_double result is expected,
+s7 calls the associated s7_d_dd_t function directly without preparing a list of arguments, and without
+wrapping up the result as an s7 object.
+</p>
+
+<p>Here is an example of using these functions; more extensive examples are in clm2xen.c in sndlib, and in s7.c.
+</p>
+<pre class="indented">
+static s7_pointer g_plus_one(s7_scheme *sc, s7_pointer args)
+{
+  return(s7_make_integer(sc, s7_integer(s7_car(args)) + 1));
+}
+
+static s7_int plus_one(s7_int x) {return(x + 1);}
+
+s7_define_safe_function(sc, "plus1", g_plus_one, 1, 0, false, "");
+s7_set_i_i_function(sc, s7_name_to_value(sc, "plus1"), plus_one);
+</pre>
+<p>s7_define_safe_function defines a Scheme function "plus1",
+telling the optimizer that this function is safe.
+A safe function treats the arglist
+passed to it as immutable and temporary (that is, it just grabs the arguments from
+the list).  A few s7_* functions are unsafe, and that makes anything that calls
+them also unsafe.  The main one is s7_apply_function, but it is possible that
+s7_eval, s7_eval_c_string, s7_call, s7_load_c_string, and s7_values are unsafe in some cases.
+If your code
+calls a Scheme function from C via s7_apply_function, it is not safe from the
+optimizer's point of view.
+If the optimizer knows a function is safe, it can use prebuilt
+lists to pass the arguments (saving in the GC), and can combine it in various
+ways with other stuff.  If an unsafe function handles its argument list safely,
+declare it with s7_define_semisafe_typed_function.
+</p>
+<p>
+If the safe function knows its return and argument
+types, there is another level of optimization that can call it without
+setting up an arglist or "unboxing" values, basically a direct call in C.
+In this example, the s7_set_i_i_function call
+tells the optimizer that if plus1 is seen in a context where the optimizer
+knows it is receiving an s7_int argument, and is expected to return
+an s7_int result, it can call plus_one directly, rather than g_plus_one.
+</p>
+
+<p>There are more of these functions in s7.c that could be exported via s7.h
+if you need them.
+</p>
+<p>By the way, to optimize scheme code (for speed), first use functions: the optimizer
+ignores anything else at the top level.  Then perhaps check lint.scm and the profiler.
+Don't use something dumb like call/cc.  Avoid append.  Use iteration, not recursion.
+Perhaps take the hot spot and do it in C.  callgrind might also be helpful, but it
+can be hard to map from callgrind output to the original scheme code.
+</p>
+<p>s7_optimize is the third-level optimizer.  It is a bit hard to explain,
+but basically you pass it some scheme code, and it returns either NULL or a function that can be called
+to evaluate that code.  There are several examples in snd-sig.c.
+Here's an example where we want to call <code>(list 1 2 3)</code> a bazillion times:
+</p>
+<pre class="indented">
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include "s7.h"
+int main(int argc, char **argv)
+{
+  s7_scheme *s = s7_init();
+  s7_pfunc f;
+  s7_pointer body;
+  s7_int gc_loc;
+  int i;
+  body = s7_list_nl(s, 4, s7_make_symbol(s, "list"),
+	                  s7_make_integer(s, 1),
+	                  s7_make_integer(s, 2),
+	                  s7_make_integer(s, 3),
+	                  NULL);
+  gc_loc = s7_gc_protect(s, body);
+  f = <em class="red">s7_optimize</em>(s, s7_list(s, 1, body));
+  if (!f) fprintf(stderr, "oops\n");
+  else
+    for (i = 0; i &lt; 2000000; i++)
+      <em class="red">f</em>(s);
+  s7_gc_unprotect_at(s, gc_loc);
+}
+</pre>
+<p>
+s7_optimize can also be used to take advantage of the direct
+C function calls mentioned above:
+</p>
+<pre class="indented">
+static s7_pointer g_d_func(s7_scheme *sc, s7_pointer args)
+{
+  /* a normal C-defined s7 function that simply returns (scheme) 1.0 */
+  return(s7_make_real(sc, 1.0));
+}
+static s7_double opt_d_func(void)
+{
+  /* a version of g_d_func that returns (C) 1.0 */
+  return(1.0);
+}
+
+/* now make it possible to call opt_d_func in place of g_d_func */
+s7_float_function func;
+s7_pointer symbol;
+
+symbol = s7_define_safe_function(sc, "d-func", g_d_func, 0, 0, false, "opt func");
+s7_set_d_function(sc, s7_name_to_value(sc, "d-func"), opt_d_func);
+
+/* and try it (this saves creating an s7 real, accessing its value, and GC-ing it eventually) */
+func = s7_float_optimize(sc, s7_list(sc, 1, s7_list(sc, 1, symbol)));
+fprintf(stderr, "%f\n", func(sc));
+</pre>
+
+
+<div class="shortheader" id="candsoon">And so on...</div>
+
+<pre class="indented">
+s7_scheme *s7_init(void);
+void s7_quit(s7_scheme *sc);
+void s7_free(s7_scheme *sc);
+void s7_repl(s7_scheme *sc);
+
+bool s7_is_eq(s7_pointer a, s7_pointer b);
+bool s7_is_eqv(s7_scheme *sc, s7_pointer a, s7_pointer b);
+bool s7_is_equal(s7_scheme *sc, s7_pointer a, s7_pointer b);
+bool s7_is_equivalent(s7_scheme *sc, s7_pointer x, s7_pointer y);
+
+void s7_provide(s7_scheme *sc, const char *feature);
+bool s7_is_provided(s7_scheme *sc, const char *feature);
+
+s7_pointer s7_stacktrace(s7_scheme *sc);
+
+s7_pointer s7_history(s7_scheme *sc);
+s7_pointer s7_add_to_history(s7_scheme *sc, s7_pointer entry);
+bool s7_history_enabled(s7_scheme *sc);
+bool s7_set_history_enabled(s7_scheme *sc, bool enabled);
+
+s7_pointer s7_dynamic_wind(s7_scheme *sc, s7_pointer init, s7_pointer body, s7_pointer finish);
+s7_pointer s7_make_continuation(s7_scheme *sc);
+s7_pointer s7_values(s7_scheme *sc, s7_pointer args);
+bool s7_is_multiple_value(s7_pointer obj);
+s7_pointer s7_copy(s7_scheme *sc, s7_pointer args);
+s7_pointer s7_fill(s7_scheme *sc, s7_pointer args);
+s7_pointer s7_type_of(s7_scheme *sc, s7_pointer arg);
+bool s7_is_syntax(s7_pointer p);
+bool s7_is_valid(s7_scheme *sc, s7_pointer arg);
+s7_pointer s7_function_let(s7_scheme *sc, s7_pointer obj);
+
+void (*s7_begin_hook(s7_scheme *sc))(s7_scheme *sc, bool *val);
+void s7_set_begin_hook(s7_scheme *sc, void (*hook)(s7_scheme *sc, bool *val));
+</pre>
+
+<p>s7_init creates a scheme interpreter.  The returned value is the s7_scheme* used by many of the FFI functions.
+s7_quit exits the interpreter.  The memory allocated for it by s7_init is not freed unless you call s7_free.
+(s7_free also frees its s7_scheme* argument, you may need to call s7_quit before s7_free to clean up the C stack,
+and as in multithreaded cases, global variables may need to be reinitialized after calling s7_free).
+s7_repl fires up a REPL.
+s7_is_eq and friends correspond to scheme's eq?, eqv?, equal?, and equivalent?.  s7_provide and s7_is_provided
+add a symbol to the *features* list, or check for its presence there.
+</p>
+<p>s7_stacktrace is like stacktrace; it currently ignores (*s7* 'stacktrace).
+The s7_history functions deal with the (*s7* 'history) buffer.
+s7_dynamic_wind is dynamic-wind in C.  The parameters "init", "body", and "finish" are
+the same as in scheme (i.e. #f or a thunk).  s7_make_continuation is call/cc; there
+is an <a href="#signal">example</a> above.
+s7_values is values, s7_copy is copy, s7_fill is fill!, s7_type_of is type-of, s7_is_syntax
+is syntax?.
+</p>
+<p>s7_is_multiple_value returns true if its argument (a list) is the result of
+calling values or s7_values.  (values) returns a special object that is eq? to
+#&lt;unspecified&gt; but not C == to it (that is, there are two things in s7 that
+represent the unspecified object, one being the result of calling values with no
+arguments).  (values obj) returns obj, which is not considered a multiple-value.
+Don't use s7_values in the new code portion of a C-side scheme macro definition
+(one from s7_define_macro).  Use the symbol 'values instead.
+</p>
+<p>s7_is_valid is a debugging aid; it tries to tell if an arbitrary value is pointing to
+an s7 object.  Set the compile-time switch TRAP_SEGFAULT to 1 before using this function!
+</p>
+<p>
+s7_function_let is an experiment. Its argument should be a c_function from s7_make_c_function and friends.
+It returns the let associated with that function, normally rootlet, but s7_make_typed_function_with_environment
+has an "envir" argument that sets this value.  See g_f2 and make_f2 in ffitest.c for an example.
+</p>
+<p>
+Finally, the begin_hook
+functions are explained <a href="#beginhook">above</a>.
+</p>
+
+<p>An example of s7_values:
+</p>
+<pre class="indented">
+static s7_pointer vals(s7_scheme *s, s7_pointer args)
+{
+  return(s7_values(s, args));
+}
+
+int main(int argc, char **argv)
+{
+  s7_scheme *s = s7_init();
+  s7_define_function(s, "vals", vals, 0, 0, true, NULL);
+  s7_pointer let = s7_eval_c_string(s, "(+ (vals 1 2 3))");
+  s7_display(s, let, s7_current_output_port(s));
+  s7_newline(s, s7_current_output_port(s));
+}
+</pre>
+
+<br>
+<div class="separator"></div>
+<div class="related">
+related documentation: &nbsp;
+<a href="s7.html">s7 &nbsp;</a>
+<a href="s7-scm.html">s7-scm &nbsp;</a>
+</div>
+
+</body>
+</html>

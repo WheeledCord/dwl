@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<!-- documentation for s7 -->
+
+<head>
+<meta http-equiv="Content-Type" content="text/html;charset=utf-8" >
+
+<title>s7-scm</title>
+
+<style>
+	EM.red {color:red; font-style:normal}
+	EM.normal {font-style:normal}
+	EM.redb {color:red; font-weight: bold; font-style: normal}
+        EM.error {color:chocolate; font-style:normal}
+	EM.emdef {font-weight: bold; font-style: normal}
+	EM.green {color:green; font-style:normal}
+	EM.gray {color:#505050; font-style:normal}
+	EM.big {font-size: 20px; font-style: normal;}
+	EM.bigger {font-size: 30px; font-style: normal;}
+        EM.def {font-style: normal}
+
+	H1 {text-align: center}
+	UL {list-style-type: none}
+
+	A {text-decoration:none}
+	A:hover {text-decoration:underline}
+
+	A.def {font-weight: bold;
+	       font-style: normal;
+	       text-decoration:none;
+	       }
+
+        PRE.indented {padding-left: 1.0cm;}
+
+	DIV.indented {background-color: #F8F8F0;
+	              padding-left: 0.5cm;
+	              padding-right: 0.5cm;
+		      padding-top: 0.5cm;
+		      padding-bottom: 0.5cm;
+		      margin-bottom: 0.5cm;
+		      border: 1px solid gray;
+		      border-radius: 20px;
+		      -moz-border-radius: 20px;
+		      -webkit-border-radius: 20px;
+		      }
+        DIV.small {font-size: small;
+	              padding-left: 0.5cm;
+	              padding-right: 0.5cm;
+		      padding-bottom: 0.5cm;
+                  }
+        DIV.header {margin-top: 60px;
+	            margin-bottom: 30px;
+	            border: 4px solid #00ff00; /* green */
+		    background-color: #eefdee; /* lightgreen */
+		    padding-left: 30px;
+	           }
+        DIV.shortheader {margin-top: 30px;
+	            margin-bottom: 10px;
+	            border: 4px solid #00ff00; /* green */
+		    background-color: #f5f5dc;
+		    padding-left: 30px;
+		    padding-top: 5px;
+		    padding-bottom: 5px;
+		    width: 20%;
+	           }
+        DIV.topheader {margin-top: 10px;
+	            margin-bottom: 40px;
+	            border: 4px solid #00ff00; /* green */
+		    background-color: #f5f5dc; /* beige */
+		    font-family: 'Helvetica';
+		    font-size: 30px;
+		    text-align: center;
+		    padding-top: 10px;
+		    padding-bottom: 10px;
+	           }
+        DIV.separator {margin-top: 30px;
+	               margin-bottom: 10px;
+	               border: 2px solid #00ff00; /* green */
+		       background-color: #f5f5dc; /* beige */
+		       padding-top: 4px;
+		       width: 30%;
+		      border-radius: 4px;
+		      -moz-border-radius: 4px;
+		      -webkit-border-radius: 4px;
+		      }
+        DIV.smallseparator {margin-top: 10px;
+	               margin-bottom: 10px;
+	               border: 2px solid #00ff00; /* green */
+		       background-color: #f5f5dc; /* beige */
+		       padding-top: 4px;
+		       width: 20%;
+		      border-radius: 4px;
+		      -moz-border-radius: 4px;
+		      -webkit-border-radius: 4px;
+		      text-align: center;
+		      }
+        BODY.body {background-color: #ffffff;    /* white */
+	           margin-right: 20px;
+	           margin-left: 20px;
+                   }
+        DIV.listener {background-color: #f0f8ff;
+	              font-family: 'Monospace';
+		   padding-left: 6px;
+		   padding-right: 6px;
+		   padding-bottom: 4px;
+		   margin-left: 1.0cm;
+		   margin-right: 4.0cm;
+	              border: 2px solid #a0a0a0;
+		      }
+        LI.li_header {padding-top: 20px;}
+
+</style>
+</head>
+<body class="body">
+
+
+<div class="topheader" id="s7examples">s7 examples</div>
+
+  <ul>
+      <li><a href="s7-scm.html#cload">cload.scm</a>
+      <ul>
+           <li><a href="s7-scm.html#libc">libc</a>
+           <li><a href="s7-scm.html#libgsl">libgsl</a>
+           <li><a href="s7-scm.html#libgdbm">libgdbm</a>
+      </ul>
+      <li><a href="s7-scm.html#case">case.scm</a>
+      <li><a href="s7-scm.html#debug">debug.scm</a>
+      <li><a href="s7-scm.html#lint">lint.scm</a>
+      <li><a href="s7-scm.html#schemerepl">repl.scm and nrepl.scm</a>
+  </ul>
+
+<p>The s7 tarball includes several scheme files:
+</p>
+<ul>
+  <li>case.scm provides case*, an extension of case for pattern matching
+  <li>cload.scm is a wrapper for the FFI stuff described above
+  <li>debug.scm provides various debugging aids such as trace, break, and watch
+  <li>json.scm is a JSON reader/writer, but I got side-tracked
+  <li>lint.scm is the s7 equivalent of the ancient C program named lint (modern equivalent: cppcheck)
+  <li>loop.scm is Rick Taube's CL loop macro
+  <li>mockery.scm has mock data libraries (openlets masquerading as various data types)
+  <li>profile.scm is a profiler
+  <li>r7rs.scm implements some of r7rs-small
+  <li>reactive.scm implements some reactive programming macros (set!, let)
+  <li>repl.scm is a vt-100 based repl
+  <li>nrepl.scm is a notcurses based repl
+  <li>s7test.scm is a regression test for s7
+  <li>stuff.scm is just some arbitrary stuff
+  <li>write.scm has a pretty printer
+</ul>
+<p>
+libc.scm, libgsl.scm, libm.scm, libdl.scm, notcurses_s7.c, libutf8proc.scm, and libgdbm.scm tie the associated
+libraries into s7.
+gdbinit has some gdb commands for s7.
+</p>
+
+
+<div class="header" id="cload"><h4>cload.scm</h4></div>
+
+<p>cload.scm defines the macro c-define that reduces the overhead
+involved in (dynamically) linking C entities into s7.
+</p>
+
+<pre class="indented">
+(<em class=def id="definecfunction">c-define</em> c-info (prefix "") (headers ()) (cflags "") (ldflags "") output-name)
+</pre>
+
+<p>For example, <code>(c-define '(double j0 (double)) "m" "math.h")</code>
+links the C math library function j0 into s7 under the name m:j0,
+passing it a double argument and getting a double result (a real in s7).
+</p>
+
+<p><em>prefix</em> is some arbitrary prefix that you want prepended to various names.
+</p>
+
+<p><em>headers</em> is a list of headers (as strings) that the c-info relies on, (("math.h") for example).
+</p>
+
+<p><em>cflags</em> are any special C compiler flags that are needed ("-I." in particular), and
+<em>ldflags</em> is the similar case for the loader.  <em>output-name</em> is the name of the
+output C file and associated library.  It defaults to "temp-s7-output" followed by a number.
+In libm.scm, it is set to "libm_s7" to protect it across cload calls.  If cload finds an
+up-to-date output C file and shared library, it simply loads the library, rather than
+going through all the trouble of writing and compling it.
+</p>
+
+<p><em>c-info</em> is a list that describes the C entities that you want to load into s7.
+It can be either one list describing one entity, or a list of such lists.
+Each description has the form:
+</p>
+
+<pre class="indented">
+(return-type entity-name-in-C (argument-type...))
+</pre>
+
+<p>where each entry is a symbol, and C names are used throughout.  So, in the j0
+example above, <code>(double j0 (double))</code> says we want access to j0, it returns
+a C double, and it takes one argument, also a C double.  s7 tries to figure out
+what the corresponding s7 type is, but in tricky cases, you should tell it
+by replacing the bare type name with a list: <code>(C-type underlying-C-type)</code>.  For example,
+the Snd function set_graph_style takes an (enum) argument of type graph_style_t.
+This is actually an int, so we use <code>(graph_style_t int)</code> as the type:
+</p>
+
+<pre class="indented">
+(void set_graph_style ((graph_style_t int)))
+</pre>
+
+<p>If the C entity is a constant, then the descriptor list has just two entries,
+the C-type and the entity name: <code>(int F_OK)</code> for example. The entity name can also be a list:
+</p>
+
+<pre class="indented">
+((graph_style_t int) (GRAPH_LINES GRAPH_DOTS GRAPH_FILLED GRAPH_DOTS_AND_LINES GRAPH_LOLLIPOPS))
+</pre>
+
+<p>This defines all the names in the list as integers.
+If the C type has a space ("struct tm*"), use <code>(symbol "struct tm*")</code>
+to construct the corresponding symbol.
+</p>
+
+<p>The entity is placed in the current s7 environment under the name <code>(string-append prefix ":" name)</code>
+where the ":" is omitted if the prefix is null.  So in the j0 example, we get in s7 the function m:j0.
+c-define returns #t if it thinks the load worked, and #f otherwise.
+</p>
+
+<p>There are times when the only straightforward approach is to write the desired
+C code directly.  To insert C code on the fly, use (in-C "code..."). Two more such
+cases that come up all the time: C-function for linkage to functions written
+directly in s7 style using in-C, and C-macro for macros in the C header file that
+need to be wrapped in #ifdefs.
+Here are some examples:
+</p>
+
+<pre class="indented">
+;;; various math library functions
+(c-define '((double j0 (double))
+            (double j1 (double))
+            (double erf (double))
+            (double erfc (double))
+            (double lgamma (double)))
+          "m" "math.h")
+
+
+;;; getenv and setenv
+(c-define '(char* getenv (char*)))
+(c-define '(int setenv (char* char* int)))
+
+
+;;; file-exists? and delete-file
+(define file-exists? (let () ; define F_OK and access only within this let
+                       (c-define '((int F_OK) (int access (char* int))) "" "unistd.h")
+                       (lambda (arg) (= (access arg F_OK) 0))))
+
+(define delete-file (let ()
+                      (c-define '(int unlink (char*)) "" "unistd.h")
+                      (lambda (file) (= (unlink file) 0)))) ; 0=success
+
+
+;;; examples from Snd:
+(c-define '(char* version_info ()) "" "snd.h" "-I.")
+
+(c-define '(mus_float_t mus_degrees_to_radians (mus_float_t)) "" "snd.h" "-I.")
+
+(c-define '(snd_info* any_selected_sound ()) "" "snd.h" "-I.")
+(c-define '(void select_channel (snd_info* int)) "" "snd.h" "-I.")
+
+(c-define '(((graph_style_t int) (GRAPH_LINES GRAPH_DOTS GRAPH_FILLED GRAPH_DOTS_AND_LINES GRAPH_LOLLIPOPS))
+            (void set_graph_style ((graph_style_t int))))
+          "" "snd.h" "-I.")
+
+
+;;; getcwd, strftime
+(c-define '(char* getcwd (char* size_t)) "" "unistd.h")
+
+(c-define (list '(void* calloc (size_t size_t))
+	        '(void free (void*))
+	        '(void time (time_t*)) ; ignore returned value
+	        (list (symbol "struct tm*") 'localtime '(time_t*))
+                (list 'size_t 'strftime (list 'char* 'size_t 'char* (symbol "struct tm*"))))
+          "" "time.h")
+
+&gt; (let ((p (calloc 1 8))
+        (str (make-string 32)))
+    (time p)
+    (strftime str 32 "%a %d-%b-%Y %H:%M %Z" (localtime p))
+    (free p)
+    str)
+<em class="gray">"Sat 11-Aug-2012 08:55 PDT\x00      "</em>
+
+
+;;; opendir, read_dir, closedir
+(c-define '((int closedir (DIR*))
+	    (DIR* opendir (char*))
+	    (in-C "static char *read_dir(DIR *p)  \
+                   {                              \
+                     struct dirent *dirp;          \
+                     dirp = readdir(p);            \
+                     if (!dirp) return(NULL);      \
+                     return(dirp-&gt;d_name);         \
+                   }")
+	    (char* read_dir (DIR*)))
+  "" '("sys/types.h" "dirent.h"))
+</pre>
+
+<p>C-init inserts its string argument into the initialization section of
+the module.  In libgsl.scm, for example,
+</p>
+<pre class="inserted">
+(C-init "gsl_set_error_handler(g_gsl_error);")
+</pre>
+<p>inserts that string (as C code) into libgsl_s7.c toward the beginning of the
+libgsl_s7_init function (line 42346 or so).
+</p>
+
+<p>When compiling, for the simple cases above, include "-ldl -Wl,-export-dynamic" in the gcc command.  So the first
+FFI example is built (this is in Linux):
+</p>
+
+<pre class="indented">
+gcc -c s7.c -I.
+gcc -o ex1 ex1.c s7.o -lm -I. -ldl -Wl,-export-dynamic
+ex1
+&gt; (load "cload.scm")
+<em class="gray">c-define-1</em>
+&gt; (c-define '(double j0 (double)) "m" "math.h")
+<em class="gray">#t</em>
+&gt; (m:j0 0.5)
+<em class="gray">0.93846980724081</em>
+</pre>
+
+<p>See also r7rs.scm, libc.scm, libgsl.scm, libm.scm, libdl.scm, and libgdbm.scm.
+libutf8proc.scm exists, but I have not tested it at all.
+</p>
+
+<p>The default in the lib*.scm files is to use the C name as the Scheme name.
+This collides with (for example) the widespread use of "-", rather than "_" in Scheme, but
+I have found it much more straightforward to stick with one name.  In cases like
+libgsl there are thousands of names, all documented at great length
+by the C name. Anyone who wants to use these functions has to start with the C name.
+If they are forced to fuss with some annoying Schemely translation of it,
+the only sane response is: "forget it! I'll do it in C".
+</p>
+
+<div class="indented" id="libc">
+<pre>
+(require libc.scm)
+
+(define (copy-file in-file out-file)
+  (with-let (sublet *libc* :in-file in-file :out-file out-file)
+
+    ;; the rest of the function body exists in the *libc* environment, with the
+    ;;   function parameters in-file and out-file imported, so, for example,
+    ;;   (open ...) below calls the libc function open.
+
+    (let ((infd (open in-file O_RDONLY 0)))
+      (if (= infd -1)
+	  (error 'io-error "can't find ~S~%" in-file)
+	  (let ((outfd (creat out-file #o666)))
+	    (if (= outfd -1)
+		(begin
+		  (close infd)
+		  (error 'io-error "can't open ~S~%" out-file))
+		(let* ((BUF_SIZE 1024)
+                       (buf (malloc BUF_SIZE)))
+		  (do ((num (read infd buf BUF_SIZE) (read infd buf BUF_SIZE)))
+		      ((or (&lt;= num 0)
+			   (not (= (write outfd buf num) num)))))
+		  (close outfd)
+		  (close infd)
+		  (free buf)
+		  out-file)))))))
+
+(define (glob-&gt;list pattern)
+  (with-let (sublet *libc* :pattern pattern)
+    (let ((g (glob.make)))
+      (glob pattern 0 g)
+      (let ((res (glob.gl_pathv g)))
+	(globfree g)
+	res))))
+
+;; now (load "*.scm") is (for-each load (glob-&gt;list "*.scm"))
+
+;; a couple regular expression examples
+(with-let (sublet *libc*)
+  (define rg (regex.make))
+  (regcomp rg "a.b" 0)
+  (display (regexec rg "acb" 0 0)) (newline) ; 0 = match
+  (regfree rg))
+
+(with-let (sublet *libc*)
+  (define rg (regex.make))
+  (let ((res (regcomp rg "colou\\?r" 0)))
+    (if (not (zero? res))
+	(error 'regex-error "~S: ~S~%" "colou\\?r" (regerror res rg)))
+    (set! res (regexec rg "The color green" 1 0))
+    (display res) (newline)                ; #i(4 9) = match start/end
+    (regfree rg)))
+</pre>
+</div>
+
+
+<div class="indented" id="libgsl">
+<pre>
+(require libgsl.scm)
+
+(define (eigenvalues M)
+  (with-let (sublet *libgsl* :M M)
+    (let* ((len (sqrt (length M)))
+	   (gm (gsl_matrix_alloc len len))
+	   (m (float-vector-&gt;gsl_matrix M gm))
+	   (evl (gsl_vector_complex_alloc len))
+	   (evc (gsl_matrix_complex_alloc len len))
+	   (w (gsl_eigen_nonsymmv_alloc len)))
+
+      (gsl_eigen_nonsymmv m evl evc w)
+      (gsl_eigen_nonsymmv_free w)
+      (gsl_eigen_nonsymmv_sort evl evc GSL_EIGEN_SORT_ABS_DESC)
+
+      (let ((vals (make-vector len)))
+	(do ((i 0 (+ i 1)))
+	    ((= i len))
+	  (set! (vals i) (gsl_vector_complex_get evl i)))
+	(gsl_matrix_free gm)
+	(gsl_vector_complex_free evl)
+	(gsl_matrix_complex_free evc)
+	vals))))
+</pre>
+</div>
+
+<p>We can use gdbm (or better yet, mdb), the :readable argument to object-&gt;string, and
+the fallback methods in the environments to create name-spaces (lets) with billions of
+thread-safe local variables, which can be saved and communicated between s7 runs:
+</p>
+<div class="indented" id="libgdbm">
+<pre>
+(require libgdbm.scm)
+
+(with-let *libgdbm*
+
+  (define *db*
+    (openlet
+     (inlet :file (gdbm_open "test.gdbm" 1024 GDBM_NEWDB #o664
+		    (lambda (str) (format *stderr* "gdbm error: ~S~%" str)))
+
+	    :let-ref-fallback (lambda (obj sym)
+				(eval-string (gdbm_fetch (obj 'file) (symbol-&gt;string sym))))
+
+	    :let-set-fallback (lambda (obj sym val)
+				 (gdbm_store (obj 'file)
+					     (symbol-&gt;string sym)
+					     (object-&gt;string val :readable)
+					     GDBM_REPLACE)
+				 val)
+
+	    :make-iterator (lambda (obj)
+			     (let ((key #f)
+				   (length (lambda (obj) (expt 2 20))))
+			       (#_make-iterator
+                                (let ((+iterator+ #t))
+				  (openlet
+				   (lambda ()
+				     (if key
+				         (set! key (gdbm_nextkey (obj 'file) (cdr key)))
+				         (set! key (gdbm_firstkey (obj 'file))))
+				     (if (pair? key)
+				         (cons (string-&gt;symbol (car key))
+					       (eval-string (gdbm_fetch (obj 'file) (car key))))
+				         key))))))))))
+
+  (set! (*db* 'str) "123") ; add a variable named 'str with the value "123"
+  (set! (*db* 'int) 432)
+
+  (with-let *db*
+    (+ int (length str)))    ; -&gt; 435
+  (map values *db*)          ; -&gt; '((str . "123") (int . 432))
+
+  (gdbm_close (*db* 'file)))
+</pre>
+
+<p>See <a href="s7.html#gthreads">gthreads</a> for a C-side example.
+</p>
+
+<!-- the overhead of using a data-base is not negligible, although libgdbm is probably not the fastest.
+     A bare set/ref 200000 times is .002 secs, via let-ref is .005, but via the data-base is .184.
+     Presumably thread globals won't be in inner loops, so even this looks ok, say 1 million / second.
+-->
+</div>
+
+
+
+<div class="header" id="case"><h4>case.scm</h4></div>
+
+<p>case.scm has case*, a compatible extension of case that includes pattern matching.
+<code>(case* selector ((target...) body) ...)</code> uses equivalent? to match the
+selector to the targets, evaluating the body associated with the first matching target.
+If a target is a list or vector, the elements are checked item by item.
+Each target, or element of a list or vector can be a pattern.  Patterns
+are of the form #&lt;whatever&gt; (undefined constants from s7's pointer of view).
+A pattern can be:
+</p>
+<samp>
+<ul>
+<li>#&lt;&gt;               any expr matches
+<li>#&lt;func&gt;           expr matches if (func expr)
+<li>#&lt;label:func&gt;     expr matches as above, expr is saved under "label"
+<li>#&lt;label:&gt;         any expr matches, and is saved under "label"
+<li>#&lt;label&gt;          expr must match the value saved under "label"
+<li>#&lt;...&gt;            skip exprs covered by the ellipsis
+<li>#&lt;label:...&gt;      skip as above, saved skipped exprs under "label" as a quoted list.
+<li>                  a pattern can have any number of labelled ellipses overall,
+<li>                  but just one unnamed ellipsis, and only one ellipsis per pair or vector
+<li>#&lt;label,func:...&gt; a labelled ellipsis which matches if (func expr); expr is the ellipsis list,
+<li>                  label is not optional in this case
+<li>#&lt;"regexp"&gt;       pattern is a regular expression to be matched against a string
+<li>#&lt;label:"regexp"&gt; a labelled regular expression
+</ul>
+</samp>
+
+<p>If a label occurs in the result body, the expression it labelled is substituted for it.
+</p>
+
+<pre class="indented">
+(case* x ((3.14) 'pi))                ; returns 'pi if x is 3.14
+
+(case* x ((#&lt;symbol?&gt;)))              ; returns #t if x is a symbol
+
+(case* x (((+ 1 #&lt;symbol?&gt;))))        ; matches any list of the form '(+ 1 x) or any symbol in place of "x"
+
+(case* x (((#&lt;symbol?&gt; #&lt;e1:...&gt; (+ #&lt;e2:...&gt;)))
+          (append #&lt;e1&gt; #&lt;e2&gt;)))      ;  passed '(a b c d (+ 1 2)), returns '(b c d 1 2)
+
+(case* x ((#&lt;"a.b"&gt;)))                ; matches if x is a string "a.b" where "." matches anything
+
+(define (palindrome? x)
+  (case* x
+    ((() (#&lt;&gt;))
+     #t)
+    (((#&lt;start:&gt; #&lt;middle:...&gt; #&lt;start&gt;))
+     (palindrome? #&lt;middle&gt;))
+    (else #f)))
+</pre>
+
+<p>case*'s matching function can be used anywhere.
+</p>
+
+<pre class="indented">
+(let ((match? ((funclet 'case*) 'case*-match?))) ; this is case*'s matcher
+  (match? x '(+ #&lt;symbol?&gt; 1)))                  ; returns #t if x is of the form '(+ x 1), x any symbol
+
+(define match+
+  (let ((match? ((funclet 'case*) 'case*-match?))
+	(labels ((funclet 'case*) 'case*-labels))) ; these are the labels and their values
+    (macro (arg)
+      (cond ((null? arg) ())
+	    ((match? arg '(+ #&lt;a:&gt; (+ #&lt;b:...&gt;))) `(+ ,(labels 'a) ,@(cadr (labels 'b))))
+	    ((match? arg '(+ #&lt;&gt; #&lt;&gt;)) `(+ ,@(cdr arg)))
+	    (else #f)))))
+
+  ;; (match+ (+ 1 (+ 2 3))) -&gt; 6
+</pre>
+
+<p>See case.scm and s7test.scm for many more examples, including let and hash-table matching.
+</p>
+
+
+<div class="header" id="debug"><h4>debug.scm</h4></div>
+
+<p>debug.scm has various debugging aids, including trace, break, watch, and a C-style stacktrace.
+The *s7* field 'debug controls when these are active, and to what extent.
+</p>
+
+<p>(<em class="emdef">trace</em> func) adds a tracepoint to the start of the function or macro func.
+(trace) adds such tracing to every subsequently defined function or macro.
+(<em class="emdef">untrace</em>) turns off tracing; (untrace func) turns off tracing in func.
+Similarly (<em class="emdef">break</em> func) places a breakpoint at the start of func,
+(<em class="emdef">unbreak</em> func) removes it.  (unbreak) removes all breakpoints.
+When a breakpoint is encountered, you are placed in a repl at
+that point; type C-q to continue.  To trace a variable, use
+(<em class="emdef">watch</em> var). watch reports whenever var is set! and
+(<em class="emdef">unwatch</em> var) removes the watchpoint.
+</p>
+
+<p>
+These trace, break and watchpoints are active
+only if <em class="emdef">(*s7* 'debug)</em> is positive.  If 'debug is 1, existing traces
+and breaks are active, but no new ones are added by s7.  If 'debug
+is 2, s7 adds tracepoints to any subsequently defined (i.e. named) functions and macros.
+If (*s7* 'debug) is 3, unnamed functions are also traced.
+If any tracing is enabled, you can get a C-style stacktrace by
+setting (<em class="emdef">debug-stack</em>) to a vector, then
+call (<em class="emdef">show-debug-stack</em>) to see the calls.
+</p>
+
+<p>
+Besides debug-stack, debug.scm also defines the convenience functions
+<em class="emdef">debug-function</em>, <em class="emdef">debug-port</em>, and
+<em class="emdef">debug-repl</em>.  debug-port is the debugger's
+output port, debug-repl drops into a repl at a breakpoint, and debug-function
+provides a way to customize the debugger's behavior.
+The function <em class="emdef">debug-frame</em> provides a way to examine local variables.
+</p>
+
+<pre class="indented">
+&gt; (define (g1 x) (+ x 1))
+<em class="gray">g1</em>
+&gt; (trace g1)   ; this loads debug.scm unless it's already loaded, and sets (*s7* 'debug) to 1
+<em class="gray">g1</em>
+&gt; (procedure-source g1) ; you can add trace-in explicitly (rather than call trace)
+<em class="gray">(lambda (x) (trace-in (curlet)) (+ x 1))</em>
+&gt; (g1 2)
+<em class="gray">(g1 2)</em>         ; file/line info is included if relevant
+<em class="gray">  -> 3
+3</em>
+&gt; (break g1)
+<em class="gray">g1</em>
+&gt; (g1 3)
+<em class="gray">break: (g1 3), C-q to exit break
+break&gt; x</em>       ; this is a repl started at the breakpoint
+<em class="gray">3</em>
+break&gt;  -> 4   ; C-q typed to exit the break
+<em class="gray">4</em>
+&gt; (define var 1)
+<em class="gray">1</em>
+&gt; (watch var)
+<em class="gray">#&lt;lambda (s v ...)&gt;</em>  ; this is the new setter for 'var
+&gt; (set! var 3)
+<em class="gray">var set! to 3
+3</em>
+&gt; (define lt (inlet 'a 3))
+<em class="gray">(inlet 'a 3)</em>
+&gt; (watch (lt 'a))
+<em class="gray">#&lt;lambda (s v ...)&gt;</em>
+&gt; (set! (lt 'a) 12)
+<em class="gray">let-set! a to 12
+12</em>
+</pre>
+
+<p>s7test.scm has more examples</p>
+
+
+
+<div class="header" id="lint"><h4>lint.scm</h4></div>
+
+<p>lint tries to find errors or infelicities in your scheme code.
+To try  it:
+</p>
+
+<pre class="indented">
+(load "lint.scm")
+(lint "some-code.scm")
+</pre>
+
+
+<p>
+There are several
+variables at the start of lint.scm to control additional output:
+</p>
+
+
+<pre class="indented">
+*report-unused-parameters*
+*report-unused-top-level-functions*
+*report-shadowed-variables*
+*report-undefined-identifiers*
+*report-multiply-defined-top-level-functions*
+*report-nested-if*
+*report-short-branch*
+*report-one-armed-if*
+*report-loaded-files*
+*report-any-!-as-setter*
+*report-doc-strings*
+*report-func-as-arg-arity-mismatch*
+*report-bad-variable-names*
+*report-built-in-functions-used-as-variables*
+*report-forward-functions*
+*report-sloppy-assoc*
+*report-bloated-arg*
+*report-clobbered-function-return-value*
+*report-boolean-functions-misbehaving*
+*report-repeated-code-fragments*
+*report-quasiquote-rewrites*
+*report-combinable-lets*
+</pre>
+
+<p>See lint.scm for more about these switches.  You can also extend lint by adding your own code,
+or adding your functions to lint's tables, or most simply by defining signatures for your functions.
+snd-lint.scm performs these tasks for Snd.  (lint exports its innards via *lint*).
+lint is not smart about functions defined outside the current file, so *report-undefined-variables*
+sometimes gets confused. You'll sometimes get a recommendation from lint that is less than helpful; nobody's perfect.
+If it's actually wrong, and not just wrong-headed, please let me know.
+Also in lint.scm are html-lint and C-lint.  html-lint reads an HTML file looking for
+Scheme code.  If any is found, it runs s7 and then lint over it, reporting troubles.
+Similarly C-lint reads a C file looking for s7_eval_c_string and running lint over its string.
+</p>
+
+<div class="header" id="schemerepl"><h4>repl.scm and nrepl.scm</h4></div>
+
+<p>There are three or four repls included with s7.
+repl.scm is a textual interface based on vt-100 codes, and nrepl.scm is an
+improvement of repl.scm based on the notcurses-core library.
+I'll treat repl.scm first, then discuss how nrepl differs from it.
+</p>
+
+<div class="separator"></div>
+
+<p>repl.scm implements a repl using vt100 codes and libc.scm.  It includes
+symbol and filename completion, a history buffer, paren matching,
+indentation, multi-line edits, and a debugger window.
+To move around in the history buffer, use M-p, M-n or M-. (C-p and C-n are used to move the cursor in the current expression).
+You can change the keymap or the prompt; all the repl functions are
+accessible through the *repl* environment.  One field is 'repl-let which
+gives you access to all the repl's internal variables and functions.
+Another is 'top-level-let, normally (sublet (rootlet)), which is the environment in
+which the repl's evaluation takes place.  You can reset the repl back to its
+starting point with: <code>(set! (*repl* 'top-level-let) (sublet (rootlet)))</code>.
+You can save the current repl state via <code>((*repl* 'save-repl))</code>, and
+restore it later via <code>((*repl* 'restore-repl))</code>.  The repl's saved state
+is in the file save.repl, or the filename can be passed as an argument to save-repl and restore-repl.
+</p>
+
+<p>There is one annoying consequence of using (sublet (rootlet)) for the top-level let:
+if you define something in the repl, then load a file that expects to find that thing
+in rootlet, it won't:
+</p>
+<pre class="indented">
+&lt;1&gt; (define (func x) (+ x 1)) ; func is in (sublet (rootlet))
+<em class="gray">func</em>
+&lt;2&gt; (load "use-func.scm") ; file contents: (display (func 3))
+<em class="red">error</em><em class="gray">: unbound variable func</em>
+</pre>
+<p>To get around this, either load the file into curlet: <code>(load "use-func.scm" (curlet))</code>,
+or use with-let to place the definition in rootlet: <code>(with-let (curlet) (define (func x) (+ x 1)))</code>.
+</p>
+
+<p>Meta keys are a problem on the Mac.  You can use ESC instead, but that requires
+super-human capacities.  I stared at replacement control keys, and nothing seemed
+right.  If you can think of something, it's easy to define replacements: see repl.scm
+which has a small table of mappings.
+</p>
+
+<p>To run the repl, either build s7 with the compiler flag -DWITH_MAIN,
+or conjure up a wrapper:
+</p>
+
+<pre class="indented">
+#include "s7.h"
+
+int main(int argc, char **argv)
+{
+  s7_scheme *sc = s7_init();
+  s7_load(sc, "repl.scm");
+  s7_eval_c_string(sc, "((*repl* 'run))");
+  return(0);
+}
+
+/* gcc -o r r.c s7.o -Wl,-export-dynamic -lm -I. -ldl
+ */
+</pre>
+
+<p>Besides evaluating s7 expressions, like any repl,
+you can also type shell commands just as in a shell:
+</p>
+
+<pre class="indented">
+&lt;1&gt; pwd
+<em class="gray">/home/bil/cl</em>
+&lt;2&gt; cd ..
+<em class="gray">/home/bil</em>
+&lt;3&gt; date
+<em class="gray">Wed 15-Apr-2015 17:32:24 PDT</em>
+</pre>
+
+<p>In most cases, these are handled through *unbound-variable-hook*, checked using "command -v", then passed
+to the underlying shell via the system function.
+</p>
+
+<p>The prompt is set by the function (*repl* 'prompt).  It gets one argument,
+the current line number, and should set the prompt string and its length.
+</p>
+<pre class="indented">
+(set! (*repl* 'prompt) (lambda (num)
+			 (with-let (*repl* 'repl-let)
+			   (set! prompt-string "scheme&gt; ")
+			   (set! prompt-length (length prompt-string)))))
+</pre>
+<p>or, to use the red lambda example mentioned earlier:
+</p>
+<pre class="indented">
+(set! (*repl* 'prompt)
+      (lambda (num)
+	(with-let (*repl* 'repl-let)
+	  (set! prompt-string (bold (red (string #\xce #\xbb #\&gt; #\space))))
+	  (set! prompt-length 3)))) ; until we get unicode length calc
+</pre>
+
+<p>The line number provides a quick way to move around in the history buffer.
+To get a previous line without laboriously typing M-p over and over,
+simply type the line number (without control or meta bits), then M-.
+In some CL repls, the special variable '* holds the last value computed.
+In repl.scm, each value is retained in variables of the form '&lt;n&gt; where n
+is the number shown in the prompt.
+</p>
+
+<pre class="indented">
+&lt;1&gt; (+ 1 2)
+<em class="gray">3</em>
+&lt;2&gt; (* &lt;1&gt; 2)
+<em class="gray">6</em>
+</pre>
+
+<p>Here is an example of adding to the keymap:
+</p>
+<pre class="indented">
+(set! ((*repl* 'keymap) (integer-&gt;char 17)) ; C-q to quit and return to caller
+      (lambda (c)
+	(set! ((*repl* 'repl-let) 'all-done) #t)))
+</pre>
+
+<p>To access the meta keys (in the keymap), use a string:
+<code>((*repl* 'keymap) (string #\escape #\p))</code>; this is Meta-p which normally accesses
+the history buffer.
+</p>
+
+<p>You can call the repl from other code, poke around in the current environment (or whatever),
+then return to the caller:
+</p>
+
+<pre class="indented">
+(load "repl.scm")
+
+(define (drop-into-repl e)
+  (let ((C-q (integer-&gt;char 17)))              ; we'll use the C-q example above to get out
+    (let ((old-C-q ((*repl* 'keymap) C-q))
+	  (old-top-level (*repl* 'top-level-let)))
+      (dynamic-wind
+	  (lambda ()
+	    (set! (*repl* 'top-level-let) e)
+	    (set! ((*repl* 'keymap) C-q)
+		  (lambda (c)
+		    (set! ((*repl* 'repl-let) 'all-done) #t))))
+	  (lambda ()
+	    ((<em class=red>*repl* 'run</em>)))                   ; run the repl
+	  (lambda ()
+	    (set! (*repl* 'top-level-let) old-top-level)
+	    (set! ((*repl* 'keymap) C-q) old-C-q))))))
+
+(let ((x 32))
+  (format *stderr* "x: ~A~%" x)
+  (<em class=red>drop-into-repl</em> (curlet))
+  (format *stderr* "now x: ~A~%" x))
+</pre>
+
+<p>Now load that code and:
+</p>
+
+<pre class="indented">
+x: 32
+&lt;1&gt; x
+<em class="gray">32</em>
+&lt;2&gt; (set! x 91)
+<em class="gray">91</em>
+&lt;3&gt; x
+<em class="gray">91</em>
+&lt;4&gt; now x: 91  ; here I typed C-q at the prompt
+</pre>
+
+<p>Another possibility:
+</p>
+<pre class="indented">
+(set! (hook-functions *error-hook*)
+      (list (lambda (hook)
+              (apply format *stderr* (hook 'data))
+              (newline *stderr*)
+	      (drop-into-repl (owlet)))))
+</pre>
+
+<p>See the end of repl.scm for more examples.  See nrepl.scm for a better version of repl.scm.
+</p>
+
+<!--
+In the repl:
+
+    (define (f x)
+      (catch #t
+        (lambda ()
+          (+ x 1))
+        (lambda (type info)
+          (drop-into-repl (format *stderr* "caught (+ ~S 1) in ~S~%" x (outlet (curlet))) (curlet)))))
+
+    (f #\a)
+
+which calls the error handler above:
+
+    caught (+ #\a 1) in (inlet 'x #\a)
+    break: C-q to exit break
+    break&gt; (curlet)
+    (inlet 'type wrong-type-arg 'info ("~A ~:D argument, ~S, is ~A but should be ~A" + 1 #\a "a character" "a number"))
+    ;; that is the error handler environment
+
+    break&gt; (outlet (curlet))
+    (inlet 'x #\a)
+    ;; the environment where the error occurred
+
+    break&gt; (with-let (outlet (outlet (outlet (curlet)))) (define (f x) (char? x)))
+    ;; redefine f in the environment where we originally defined it
+
+    break&gt; (f #\a)
+    #t
+    ;; C-q here to exit the break repl; we return to the original repl
+    ;;   where f has been redefined:
+
+    (procedure-source f)
+    (lambda (x) (char? x))
+
+The environment chain is slightly different if you call the code at the top from a file
+rather than doing it all in the repl.
+-->
+
+
+<!--
+(load "/home/bil/test/sndlib/libsndlib.so" (inlet 'init_func 's7_init_sndlib))
+-->
+
+
+<div class="separator"></div>
+
+<p>Unlike repl, nrepl has support for the mouse, traversable, scrollable, and resizable panes, built-in ties to
+lint.scm, debug.scm, and profile.scm, and various other enhancements.
+Since it includes all the libc, notcurses FFI code, and nrepl.scm at compile-time, there
+are no problems running it anywhere.  To build nrepl:
+</p>
+<pre class="indented">
+gcc -o nrepl s7.c -O2 -I. -Wl,-export-dynamic -lm -ldl -DWITH_MAIN -DWITH_NOTCURSES -lnotcurses-core
+</pre>
+<p>If that is too easy, try:
+</p>
+<pre class="indented">
+gcc -c s7.c -O2 -I. -Wl,-export-dynamic -lm -ldl
+gcc -o nrepl nrepl.c s7.o -lnotcurses-core -lm -I. -ldl
+</pre>
+<p>notcurses_s7.c needs version 2.1.6 or later of the notcurses-core library.
+</p>
+
+<p>When nrepl starts up, you have a prompt at the top of the terminal, and a status box
+at the bottom.  You can move around the pane via C-p and C-n (no need for repl.scm's M-p and M-n),
+or use the mouse, or the arrow keys.  If you set and hit a break point, a new pane is
+opened in the context of the break.  C-q exits the break.  At the top pane, C-q exits
+nrepl.  C-g gives you another prompt (handy if you're caught in a messed up expression).
+If you're in an infinite loop, C-c interrupts it.  Otherwise C-c exits nrepl.
+</p>
+
+<p>If you set up a watcher (via watch from debug.scm), the action is displayed in
+a separate box in the upper right corner.  The status box displays all sorts of
+informative and helpful messages, or at least that is the intent.  lint.scm
+checks each expression you type, and various hooks let you know when things
+are happening in the background.  Function signatures are posted there as well.
+</p>
+
+<p>You can customize nrepl in basically the same ways as described above for repl.scm.
+You can also place these in a file named ".nrepl"; if nrepl finds such a file, it
+loads it automatically at startup.
+</p>
+
+<!--
+<br>
+<blockquote>
+<div class="indented">
+<p>After months of intense typing,
+Insanely declares his labors complete.  "Ship it!" says Mr Big, and hands
+him a million stock options. Meanwhile, in the basement behind an old door
+with the eldritch sign "eep Ou", in a labyrinth of pounding pipes and fluorescent lights,
+a forgotten shadow types <code>(lint "insanely-great.scm")</code>...
+</p>
+</div>
+</blockquote>
+-->
+
+<br>
+<div class="separator"></div>
+<div class="related">
+related documentation: &nbsp;
+<a href="s7.html">s7 &nbsp;</a>
+<a href="s7-ffi.html">s7-ffi &nbsp;</a>
+</div>
+
+</body>
+</html>
