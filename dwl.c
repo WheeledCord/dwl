@@ -1798,11 +1798,11 @@ Client *
 client_in_direction(Client *c, int dir)
 {
 	Client *best = NULL, *other;
-	int best_overlap = 0;
-	int best_pos = INT_MAX;  /* for tie-breaking: prefer top/left */
-	int overlap, pos;
-	int ax, ay, aw, ah;  /* current window */
-	int bx, by, bw, bh;  /* candidate window */
+	int best_ratio = 0;
+	int best_pos = INT_MAX;
+	int overlap, pos, ratio, candidate_size;
+	int ax, ay, aw, ah;
+	int bx, by, bw, bh;
 	
 	if (!c || !c->mon) return NULL;
 	
@@ -1822,50 +1822,43 @@ client_in_direction(Client *c, int dir)
 		
 		overlap = 0;
 		pos = 0;
+		candidate_size = 1;
 		
 		switch (dir) {
 		case DirLeft:
-			/* Other is to our left: their right edge >= our left edge (overlap),
-			 * and their center is left of our center */
-			if (bx + bw >= ax && bx + bw/2 < ax + aw/2) {
+			if (bx + bw <= ax + aw/2 && bx < ax) {
 				overlap = MIN(ay + ah, by + bh) - MAX(ay, by);
-				if (overlap < 0) overlap = 0;
-				pos = by;  /* prefer higher windows */
+				pos = by;
+				candidate_size = bh;
 			}
 			break;
 		case DirRight:
-			/* Other is to our right: their left edge <= our right edge,
-			 * and their center is right of our center */
-			if (bx <= ax + aw && bx + bw/2 > ax + aw/2) {
+			if (bx >= ax + aw/2 && bx + bw > ax + aw) {
 				overlap = MIN(ay + ah, by + bh) - MAX(ay, by);
-				if (overlap < 0) overlap = 0;
-				pos = by;  /* prefer higher windows */
+				pos = by;
+				candidate_size = bh;
 			}
 			break;
 		case DirUp:
-			/* Other is above us: their bottom edge >= our top edge,
-			 * and their center is above our center */
-			if (by + bh >= ay && by + bh/2 < ay + ah/2) {
+			if (by + bh <= ay + ah/2 && by < ay) {
 				overlap = MIN(ax + aw, bx + bw) - MAX(ax, bx);
-				if (overlap < 0) overlap = 0;
-				pos = bx;  /* prefer leftmost windows */
+				pos = bx;
+				candidate_size = bw;
 			}
 			break;
 		case DirDown:
-			/* Other is below us: their top edge <= our bottom edge,
-			 * and their center is below our center */
-			if (by <= ay + ah && by + bh/2 > ay + ah/2) {
+			if (by >= ay + ah/2 && by + bh > ay + ah) {
 				overlap = MIN(ax + aw, bx + bw) - MAX(ax, bx);
-				if (overlap < 0) overlap = 0;
-				pos = bx;  /* prefer leftmost windows */
+				pos = bx;
+				candidate_size = bw;
 			}
 			break;
 		}
 		
-		/* Pick best: must have overlap, prefer top/left position, then most overlap */
 		if (overlap > 0) {
-			if (!best || pos < best_pos || (pos == best_pos && overlap > best_overlap)) {
-				best_overlap = overlap;
+			ratio = (overlap * 100) / candidate_size;
+			if (!best || ratio > best_ratio || (ratio == best_ratio && pos < best_pos)) {
+				best_ratio = ratio;
 				best_pos = pos;
 				best = other;
 			}
@@ -1894,16 +1887,106 @@ focusdir(const Arg *arg)
 void
 swapdir(const Arg *arg)
 {
-	Client *sel, *target;
-	DwindleNode *target_node, *node, *new_parent;
+	Client *sel, *target, *sibling_client;
+	DwindleNode *target_node, *node, *new_parent, *parent, *sibling;
+	int dir_horizontal, is_child0;
 	
 	if (!selmon) return;
 	sel = focustop(selmon);
 	if (!sel || sel->isfloating || !sel->dwindle) return;
 	
-	/* Find target window in direction BEFORE any tree modification */
+	node = sel->dwindle;
+	dir_horizontal = (arg->i == DirLeft || arg->i == DirRight);
+	
+	/* Find target window in direction */
 	target = client_in_direction(sel, arg->i);
-	if (!target || !target->dwindle) return;
+	
+	if (!target || !target->dwindle) {
+		/* No window in that direction */
+		parent = node->parent;
+		if (!parent) return;
+		
+		is_child0 = (parent->children[0] == node);
+		sibling = is_child0 ? parent->children[1] : parent->children[0];
+		if (!sibling) return;
+		
+		/* Find the sibling's client (might be nested) */
+		while (sibling && !sibling->client && sibling->children[0])
+			sibling = sibling->children[0];
+		if (!sibling || !sibling->client) return;
+		sibling_client = sibling->client;
+		
+		/* If split direction matches movement direction and we're moving "outward", absorb */
+		if (parent->split_horizontal == dir_horizontal) {
+			if ((arg->i == DirLeft && !is_child0) || (arg->i == DirRight && is_child0) ||
+			    (arg->i == DirUp && !is_child0) || (arg->i == DirDown && is_child0)) {
+				dwindle_remove(sibling_client);
+				arrange(selmon);
+				focusclient(sel, 1);
+				return;
+			}
+		}
+		
+		/* Split direction differs from movement - change the split orientation */
+		/* Remove sel, then re-insert with new split direction */
+		dwindle_remove(sel);
+		
+		/* Re-fetch sibling after removal */
+		sibling = sibling_client->dwindle;
+		if (!sibling) {
+			arrange(selmon);
+			return;
+		}
+		
+		/* Create node for sel */
+		node = dwindle_alloc();
+		if (!node) {
+			arrange(selmon);
+			return;
+		}
+		node->client = sel;
+		node->mon = sel->mon;
+		node->tags = sel->tags;
+		sel->dwindle = node;
+		
+		/* Create new parent with the new split direction */
+		new_parent = dwindle_alloc();
+		if (!new_parent) {
+			arrange(selmon);
+			return;
+		}
+		
+		new_parent->box = sibling->box;
+		new_parent->mon = sibling->mon;
+		new_parent->tags = sibling->tags;
+		new_parent->parent = sibling->parent;
+		new_parent->client = NULL;
+		new_parent->split_horizontal = dir_horizontal;
+		
+		/* Link new parent into tree */
+		if (sibling->parent) {
+			if (sibling->parent->children[0] == sibling)
+				sibling->parent->children[0] = new_parent;
+			else
+				sibling->parent->children[1] = new_parent;
+		}
+		
+		/* Order: sel goes in the direction we moved */
+		if (arg->i == DirLeft || arg->i == DirUp) {
+			new_parent->children[0] = node;
+			new_parent->children[1] = sibling;
+		} else {
+			new_parent->children[0] = sibling;
+			new_parent->children[1] = node;
+		}
+		
+		sibling->parent = new_parent;
+		node->parent = new_parent;
+		
+		arrange(selmon);
+		focusclient(sel, 1);
+		return;
+	}
 	
 	/* Remove sel from tree - target->dwindle may move due to dwindle_free swap */
 	dwindle_remove(sel);
@@ -1942,7 +2025,7 @@ swapdir(const Arg *arg)
 	new_parent->client = NULL;
 	
 	/* Decide split direction based on move direction */
-	if (arg->i == DirLeft || arg->i == DirRight)
+	if (dir_horizontal)
 		new_parent->split_horizontal = 1;
 	else
 		new_parent->split_horizontal = 0;
