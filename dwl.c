@@ -1,6 +1,4 @@
-/*
- * See LICENSE file for copyright and license details.
- */
+//go to >550 for the important stuff
 #include <dirent.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -99,7 +97,7 @@ enum { XDGShell, LayerShell, X11 }; /* client types */
 enum { LyrBg, LyrBottom, LyrTile, LyrFloat, LyrTop, LyrFS, LyrOverlay, LyrBlock, NUM_LAYERS }; /* scene layers */
 enum { DirLeft, DirRight, DirUp, DirDown }; /* directions for focus/swap */
 
-/* Forward declarations */
+/* forward declarations */
 typedef struct DwindleNode DwindleNode;
 
 typedef union {
@@ -124,10 +122,10 @@ typedef struct {
 	Monitor *mon;
 	struct wlr_scene_tree *scene;
 	struct wlr_scene_tree *scene_surface;
-	struct wlr_scene_buffer *frame_top;    /* ┌TITLE───┐ */
-	struct wlr_scene_buffer *frame_bottom; /* └────────┘ */
-	struct wlr_scene_buffer *frame_left;   /* │ column */
-	struct wlr_scene_buffer *frame_right;  /* │ column */
+	struct wlr_scene_buffer *frame_top;
+	struct wlr_scene_buffer *frame_bottom;
+	struct wlr_scene_buffer *frame_left; 
+	struct wlr_scene_buffer *frame_right;
 	struct wl_list link;
 	struct wl_list flink;
 	struct wlr_box geom; /* layout-relative, includes border */
@@ -273,7 +271,7 @@ typedef struct {
 	struct wl_listener destroy;
 } SessionLock;
 
-/* function declarations */
+/* scary */
 static void applybounds(Client *c, struct wlr_box *bbox);
 static void applyrules(Client *c);
 static void arrange(Monitor *m);
@@ -375,6 +373,7 @@ static void setsel(struct wl_listener *listener, void *data);
 static void setup(void);
 static void setup_scheme(void);
 static void load_config(void);
+static void setup_foot_config(void);
 static int check_scheme_bindings(uint32_t mods, xkb_keysym_t sym);
 static void setupgrid(void);
 static void spawn(const Arg *arg);
@@ -3343,6 +3342,7 @@ setup(void)
 	wlr_log_init(log_level, NULL);
 	setupgrid();
 	buildappcache();
+	setup_foot_config();
 
 	/* Initialize s7 Scheme interpreter */
 	sc = s7_init();
@@ -4233,6 +4233,113 @@ load_config(void)
 }
 
 /* ==================== END SCHEME BINDINGS ==================== */
+
+static const char *foot_config =
+"# Minimal Retro Foot Configuration\n"
+"\n"
+"[main]\n"
+"font=PxPlus IBM VGA 8x16:size=12\n"
+"\n"
+"[colors]\n"
+"# Classic DOS/VGA color scheme\n"
+"background=000000\n"
+"foreground=aaaaaa\n"
+"\n"
+"## Normal/regular colors (0-7)\n"
+"regular0=000000  # black\n"
+"regular1=aa0000  # red\n"
+"regular2=00aa00  # green\n"
+"regular3=aa5500  # yellow/brown\n"
+"regular4=0000aa  # blue\n"
+"regular5=aa00aa  # magenta\n"
+"regular6=00aaaa  # cyan\n"
+"regular7=aaaaaa  # white\n"
+"\n"
+"## Bright colors (8-15)\n"
+"bright0=555555  # bright black\n"
+"bright1=ff5555  # bright red\n"
+"bright2=55ff55  # bright green\n"
+"bright3=ffff55  # bright yellow\n"
+"bright4=5555ff  # bright blue\n"
+"bright5=ff55ff  # bright magenta\n"
+"bright6=55ffff  # bright cyan\n"
+"bright7=ffffff  # bright white\n"
+"\n"
+"[tweak]\n"
+"font-monospace-warn=no\n";
+
+static void
+setup_foot_config(void)
+{
+	char path[1024], dir[512], backup[1024];
+	char fontdir[512], fontsrc[512], fontdst[1024];
+	const char *home = getenv("HOME");
+	FILE *f, *src, *dst;
+	struct stat st;
+	char buf[4096];
+	size_t n;
+
+	if (!home)
+		return;
+
+	/* Install font if needed */
+	snprintf(fontdir, sizeof(fontdir), "%s/.local/share/fonts", home);
+	snprintf(fontsrc, sizeof(fontsrc), "%s/PxPlus_IBM_VGA_8x16.ttf", home);
+	snprintf(fontdst, sizeof(fontdst), "%s/PxPlus_IBM_VGA_8x16.ttf", fontdir);
+
+	if (stat(fontdst, &st) != 0 && stat(fontsrc, &st) == 0) {
+		/* Create font directory */
+		snprintf(path, sizeof(path), "%s/.local", home);
+		mkdir(path, 0755);
+		snprintf(path, sizeof(path), "%s/.local/share", home);
+		mkdir(path, 0755);
+		mkdir(fontdir, 0755);
+
+		/* Copy font file */
+		src = fopen(fontsrc, "rb");
+		if (src) {
+			dst = fopen(fontdst, "wb");
+			if (dst) {
+				while ((n = fread(buf, 1, sizeof(buf), src)) > 0)
+					fwrite(buf, 1, n, dst);
+				fclose(dst);
+				fprintf(stderr, "dwl: installed font to %s\n", fontdst);
+
+				/* Update font cache */
+				if (fork() == 0) {
+					execlp("fc-cache", "fc-cache", "-f", fontdir, NULL);
+					_exit(1);
+				}
+			}
+			fclose(src);
+		}
+	}
+
+	/* Setup foot config */
+	snprintf(dir, sizeof(dir), "%s/.config/foot", home);
+	snprintf(path, sizeof(path), "%s/foot.ini", dir);
+	snprintf(backup, sizeof(backup), "%s/foot.ini.dwl-backup", dir);
+
+	/* Create directory if needed */
+	if (stat(dir, &st) != 0)
+		mkdir(dir, 0755);
+
+	/* Back up existing config if it exists and no backup exists yet */
+	if (stat(path, &st) == 0 && stat(backup, &st) != 0) {
+		fprintf(stderr, "dwl: backing up existing foot.ini to %s\n", backup);
+		rename(path, backup);
+	}
+
+	/* Write our config */
+	f = fopen(path, "w");
+	if (f) {
+		fputs(foot_config, f);
+		fclose(f);
+		fprintf(stderr, "dwl: installed foot config at %s\n", path);
+	} else {
+		fprintf(stderr, "dwl: warning: could not write foot config\n");
+	}
+}
 
 static int
 app_compare(const void *a, const void *b)
