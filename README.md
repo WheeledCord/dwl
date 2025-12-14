@@ -1,15 +1,4 @@
-# dwl
-
-A hackable Wayland compositor with a grid-based tiling system and Scheme configuration.
-
-## Features
-
-- **Grid-based tiling** - Windows snap to character cell boundaries (8x16 pixels)
-- **Text-mode aesthetics** - Title bars rendered with bitmap fonts, box-drawing borders
-- **Scheme configuration** - Live-reloadable config via s7 Scheme
-- **Dwindle layout** - Binary tree tiling that splits focused window
-- **Built-in launcher** - Application launcher overlay
-- **XWayland support** - Run X11 applications
+# dwl (i need a new name)
 
 ## Building
 
