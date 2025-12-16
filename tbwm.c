@@ -158,6 +158,7 @@ typedef struct {
 	uint32_t resize; /* configure serial of a pending resize */
 	char prev_mon_name[64]; /* remember monitor name for VT switch restore */
 	DwindleNode *dwindle;    /* dwindle layout node (NULL if floating) */
+	int needs_title_scroll;  /* 1 if title overflows and needs scrolling */
 } Client;
 
 typedef struct {
@@ -380,11 +381,21 @@ static void spawn(const Arg *arg);
 static void buildappcache(void);
 static void render_char_to_buffer(uint32_t *pixels, int buf_w, int buf_h, int x, int y,
                       unsigned long charcode, uint32_t color);
+static void render_char_clipped(uint32_t *pixels, int buf_w, int buf_h, int x, int y,
+                    unsigned long charcode, uint32_t color, int clip_left, int clip_right);
 static void updatebar(Monitor *m);
 static void updatebars(void);
 static int bartimer(void *data);
+static int scrolltimer(void *data);
 static void togglelauncher(const Arg *arg);
+static void togglerepl(const Arg *arg);
+static void updaterepl(void);
+static void repl_add_line(const char *line);
+static void repl_eval(void);
+static int replkey(xkb_keysym_t sym);
 static void updateframe(Client *c);
+static void updateframes(void);
+
 static void startdrag(struct wl_listener *listener, void *data);
 static void tag(const Arg *arg);
 static void tagmon(const Arg *arg);
@@ -422,6 +433,23 @@ static int launcher_selection = 0;
 static char **app_cache = NULL;
 static int app_cache_count = 0;
 static struct wl_event_source *bar_timer = NULL;
+static uint32_t title_scroll_offset = 0; /* pixel offset for smooth title scrolling */
+static int title_scroll_mode = 1;        /* 0 = truncate with ..., 1 = scroll */
+static int title_scroll_speed = 30;      /* pixels per second */
+static struct wl_event_source *scroll_timer = NULL;
+static int any_title_needs_scroll = 0;   /* track if any title needs scrolling */
+
+/* REPL state */
+static int repl_visible = 1;             /* 1 = REPL background/text visible */
+static int repl_input_active = 0;        /* 1 = REPL accepting keyboard input */
+static char repl_input[1024] = {0};      /* current input line */
+static int repl_input_len = 0;
+#define REPL_HISTORY_LINES 256
+#define REPL_LINE_LEN 256
+static char repl_history[REPL_HISTORY_LINES][REPL_LINE_LEN];  /* scrollback buffer */
+static int repl_history_count = 0;       /* number of lines in history */
+static int repl_scroll_offset = 0;       /* scroll position (0 = bottom) */
+static struct wlr_scene_buffer *repl_buffer = NULL;  /* rendered REPL output */
 
 /* Dwindle layout nodes */
 #define MAX_DWINDLE_NODES 256
@@ -430,6 +458,80 @@ static int dwindle_node_count = 0;
 
 /* s7 Scheme interpreter */
 static s7_scheme *sc = NULL;
+
+/* ==================== RUNTIME CONFIG (replaces config.h) ==================== */
+/* These can all be modified at runtime via Scheme */
+
+/* Appearance */
+static int cfg_sloppyfocus = 1;
+static int cfg_bypass_surface_visibility = 0;
+static unsigned int cfg_borderpx = 1;
+static int cfg_tagcount = 9;
+
+/* Colors (ARGB format: 0xAARRGGBB) */
+static float cfg_rootcolor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+static float cfg_bordercolor[4] = {0.267f, 0.267f, 0.267f, 1.0f};  /* #444444 */
+static float cfg_focuscolor[4] = {0.0f, 0.333f, 0.467f, 1.0f};     /* #005577 */
+static float cfg_urgentcolor[4] = {1.0f, 0.0f, 0.0f, 1.0f};        /* #ff0000 */
+static float cfg_fullscreen_bg[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+
+/* Frame colors (ARGB format for rendering) */
+static uint32_t cfg_frame_bg_color = 0xFF0000aa;     /* blue background (focused) */
+static uint32_t cfg_frame_bg_inactive = 0xFF000000;  /* black background (inactive) */
+static uint32_t cfg_frame_fg_color = 0xFFaaaaaa;     /* gray text/lines */
+
+/* Grid font settings */
+static char cfg_font_path[512] = "/home/fionn/.local/share/fonts/PxPlus_IBM_VGA_8x16.ttf";
+static int cfg_font_size = 16;
+
+/* Keyboard settings */
+static char cfg_xkb_rules[64] = "";
+static char cfg_xkb_model[64] = "";
+static char cfg_xkb_layout[64] = "";
+static char cfg_xkb_variant[64] = "";
+static char cfg_xkb_options[128] = "";
+static int cfg_repeat_rate = 25;
+static int cfg_repeat_delay = 600;
+
+/* Trackpad settings */
+static int cfg_tap_to_click = 1;
+static int cfg_tap_and_drag = 1;
+static int cfg_drag_lock = 1;
+static int cfg_natural_scrolling = 0;
+static int cfg_disable_while_typing = 1;
+static int cfg_left_handed = 0;
+static int cfg_middle_button_emulation = 0;
+static int cfg_scroll_method = 1;  /* 0=none, 1=2fg, 2=edge, 3=on_button_down */
+static int cfg_click_method = 1;   /* 0=none, 1=button_areas, 2=clickfinger */
+static double cfg_accel_speed = 0.0;
+static int cfg_accel_profile = 1;  /* 0=none, 1=adaptive, 2=flat */
+
+/* Window rules - dynamic array */
+#define MAX_RULES 64
+typedef struct {
+	char id[64];
+	char title[128];
+	uint32_t tags;
+	int isfloating;
+	int monitor;
+} RuntimeRule;
+static RuntimeRule cfg_rules[MAX_RULES];
+static int cfg_rule_count = 0;
+
+/* Mouse bindings - dynamic array */
+#define MAX_MOUSE_BINDINGS 32
+typedef struct {
+	uint32_t mod;
+	uint32_t button;
+	s7_pointer callback;
+} MouseBinding;
+static MouseBinding cfg_mouse_bindings[MAX_MOUSE_BINDINGS];
+static int cfg_mouse_binding_count = 0;
+
+/* Log level */
+static int cfg_log_level = WLR_ERROR;
+
+/* ==================== END RUNTIME CONFIG ==================== */
 
 static pid_t child_pid = -1;
 static int locked;
@@ -728,6 +830,15 @@ buttonpress(struct wl_listener *listener, void *data)
 				return;
 			}
 		}
+		/* Check Scheme mouse bindings */
+		for (int i = 0; i < cfg_mouse_binding_count; i++) {
+			if (CLEANMASK(mods) == CLEANMASK(cfg_mouse_bindings[i].mod) &&
+					event->button == cfg_mouse_bindings[i].button) {
+				if (sc && cfg_mouse_bindings[i].callback)
+					s7_call(sc, cfg_mouse_bindings[i].callback, s7_nil(sc));
+				return;
+			}
+		}
 		break;
 	case WL_POINTER_BUTTON_STATE_RELEASED:
 		/* If you released any buttons, we exit interactive move/resize mode. */
@@ -771,7 +882,7 @@ checkidleinhibitor(struct wlr_surface *exclude)
 	wl_list_for_each(inhibitor, &idle_inhibit_mgr->inhibitors, link) {
 		struct wlr_surface *surface = wlr_surface_get_root_surface(inhibitor->surface);
 		struct wlr_scene_tree *tree = surface->data;
-		if (exclude != surface && (bypass_surface_visibility || (!tree
+		if (exclude != surface && (cfg_bypass_surface_visibility || (!tree
 				|| wlr_scene_node_coords(&tree->node, &unused_lx, &unused_ly)))) {
 			inhibited = 1;
 			break;
@@ -1060,7 +1171,7 @@ createkeyboardgroup(void)
 	xkb_keymap_unref(keymap);
 	xkb_context_unref(context);
 
-	wlr_keyboard_set_repeat_info(&group->wlr_group->keyboard, repeat_rate, repeat_delay);
+	wlr_keyboard_set_repeat_info(&group->wlr_group->keyboard, cfg_repeat_rate, cfg_repeat_delay);
 
 	/* Set up listeners for keyboard events */
 	LISTEN(&group->wlr_group->keyboard.events.key, &group->key, keypress);
@@ -1193,7 +1304,7 @@ createmon(struct wl_listener *listener, void *data)
 	 *
 	 */
 	/* updatemons() will resize and set correct position */
-	m->fullscreen_bg = wlr_scene_rect_create(layers[LyrFS], 0, 0, fullscreen_bg);
+	m->fullscreen_bg = wlr_scene_rect_create(layers[LyrFS], 0, 0, cfg_fullscreen_bg);
 	wlr_scene_node_set_enabled(&m->fullscreen_bg->node, 0);
 
 	/* Adds this to the output layout in the order it was configured.
@@ -1219,7 +1330,7 @@ createnotify(struct wl_listener *listener, void *data)
 	/* Allocate a Client for this surface */
 	c = toplevel->base->data = ecalloc(1, sizeof(*c));
 	c->surface.xdg = toplevel->base;
-	c->bw = borderpx;
+	c->bw = cfg_borderpx;
 
 	LISTEN(&toplevel->base->surface->events.commit, &c->commit, commitnotify);
 	LISTEN(&toplevel->base->surface->events.map, &c->map, mapnotify);
@@ -1238,36 +1349,54 @@ createpointer(struct wlr_pointer *pointer)
 			&& (device = wlr_libinput_get_device_handle(&pointer->base))) {
 
 		if (libinput_device_config_tap_get_finger_count(device)) {
-			libinput_device_config_tap_set_enabled(device, tap_to_click);
-			libinput_device_config_tap_set_drag_enabled(device, tap_and_drag);
-			libinput_device_config_tap_set_drag_lock_enabled(device, drag_lock);
-			libinput_device_config_tap_set_button_map(device, button_map);
+			libinput_device_config_tap_set_enabled(device, cfg_tap_to_click);
+			libinput_device_config_tap_set_drag_enabled(device, cfg_tap_and_drag);
+			libinput_device_config_tap_set_drag_lock_enabled(device, cfg_drag_lock);
+			libinput_device_config_tap_set_button_map(device, LIBINPUT_CONFIG_TAP_MAP_LRM);
 		}
 
 		if (libinput_device_config_scroll_has_natural_scroll(device))
-			libinput_device_config_scroll_set_natural_scroll_enabled(device, natural_scrolling);
+			libinput_device_config_scroll_set_natural_scroll_enabled(device, cfg_natural_scrolling);
 
 		if (libinput_device_config_dwt_is_available(device))
-			libinput_device_config_dwt_set_enabled(device, disable_while_typing);
+			libinput_device_config_dwt_set_enabled(device, cfg_disable_while_typing);
 
 		if (libinput_device_config_left_handed_is_available(device))
-			libinput_device_config_left_handed_set(device, left_handed);
+			libinput_device_config_left_handed_set(device, cfg_left_handed);
 
 		if (libinput_device_config_middle_emulation_is_available(device))
-			libinput_device_config_middle_emulation_set_enabled(device, middle_button_emulation);
+			libinput_device_config_middle_emulation_set_enabled(device, cfg_middle_button_emulation);
 
-		if (libinput_device_config_scroll_get_methods(device) != LIBINPUT_CONFIG_SCROLL_NO_SCROLL)
-			libinput_device_config_scroll_set_method(device, scroll_method);
+		if (libinput_device_config_scroll_get_methods(device) != LIBINPUT_CONFIG_SCROLL_NO_SCROLL) {
+			enum libinput_config_scroll_method sm = LIBINPUT_CONFIG_SCROLL_NO_SCROLL;
+			switch (cfg_scroll_method) {
+				case 1: sm = LIBINPUT_CONFIG_SCROLL_2FG; break;
+				case 2: sm = LIBINPUT_CONFIG_SCROLL_EDGE; break;
+				case 3: sm = LIBINPUT_CONFIG_SCROLL_ON_BUTTON_DOWN; break;
+			}
+			libinput_device_config_scroll_set_method(device, sm);
+		}
 
-		if (libinput_device_config_click_get_methods(device) != LIBINPUT_CONFIG_CLICK_METHOD_NONE)
-			libinput_device_config_click_set_method(device, click_method);
+		if (libinput_device_config_click_get_methods(device) != LIBINPUT_CONFIG_CLICK_METHOD_NONE) {
+			enum libinput_config_click_method cm = LIBINPUT_CONFIG_CLICK_METHOD_NONE;
+			switch (cfg_click_method) {
+				case 1: cm = LIBINPUT_CONFIG_CLICK_METHOD_BUTTON_AREAS; break;
+				case 2: cm = LIBINPUT_CONFIG_CLICK_METHOD_CLICKFINGER; break;
+			}
+			libinput_device_config_click_set_method(device, cm);
+		}
 
 		if (libinput_device_config_send_events_get_modes(device))
-			libinput_device_config_send_events_set_mode(device, send_events_mode);
+			libinput_device_config_send_events_set_mode(device, LIBINPUT_CONFIG_SEND_EVENTS_ENABLED);
 
 		if (libinput_device_config_accel_is_available(device)) {
-			libinput_device_config_accel_set_profile(device, accel_profile);
-			libinput_device_config_accel_set_speed(device, accel_speed);
+			enum libinput_config_accel_profile ap = LIBINPUT_CONFIG_ACCEL_PROFILE_NONE;
+			switch (cfg_accel_profile) {
+				case 1: ap = LIBINPUT_CONFIG_ACCEL_PROFILE_ADAPTIVE; break;
+				case 2: ap = LIBINPUT_CONFIG_ACCEL_PROFILE_FLAT; break;
+			}
+			libinput_device_config_accel_set_profile(device, ap);
+			libinput_device_config_accel_set_speed(device, cfg_accel_speed);
 		}
 	}
 
@@ -2098,7 +2227,7 @@ focusclient(Client *c, int lift)
 		/* Don't change border color if there is an exclusive focus or we are
 		 * handling a drag operation */
 		if (!exclusive_focus && !seat->drag) {
-			client_set_border_color(c, focuscolor);
+			client_set_border_color(c, cfg_focuscolor);
 			updateframe(c);
 		}
 	}
@@ -2117,7 +2246,7 @@ focusclient(Client *c, int lift)
 		/* Don't deactivate old client if the new one wants focus, as this causes issues with winecfg
 		 * and probably other clients */
 		} else if (old_c && !client_is_unmanaged(old_c) && (!c || !client_wants_focus(c))) {
-			client_set_border_color(old_c, bordercolor);
+			client_set_border_color(old_c, cfg_bordercolor);
 			updateframe(old_c);
 			client_activate_surface(old, 0);
 		}
@@ -2264,7 +2393,7 @@ inputdevice(struct wl_listener *listener, void *data)
 	}
 
 	/* We need to let the wlr_seat know what our capabilities are, which is
-	 * communiciated to the client. In dwl we always have a cursor, even if
+	 * communiciated to the client. In tbwm we always have a cursor, even if
 	 * there are no pointer devices, so we always include that capability. */
 	/* TODO do we actually require a cursor? */
 	caps = WL_SEAT_CAPABILITY_POINTER;
@@ -2318,7 +2447,7 @@ runlauncher(void)
 	cmd[sizeof(cmd) - 1] = '\0';
 
 	/* Log the launch attempt */
-	log = fopen("/tmp/dwl-launcher.log", "a");
+	log = fopen("/tmp/tbwm-launcher.log", "a");
 	if (log) {
 		fprintf(log, "Launching: '%s'\n", cmd);
 		fclose(log);
@@ -2340,7 +2469,7 @@ runlauncher(void)
 		(void)fd;
 
 		/* Redirect stdout/stderr to log file for debugging */
-		fd = open("/tmp/dwl-launcher.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+		fd = open("/tmp/tbwm-launcher.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
 		if (fd >= 0) {
 			dup2(fd, STDOUT_FILENO);
 			dup2(fd, STDERR_FILENO);
@@ -2357,13 +2486,13 @@ runlauncher(void)
 		perror("execl failed");
 		_exit(EXIT_FAILURE);
 	} else if (pid > 0) {
-		log = fopen("/tmp/dwl-launcher.log", "a");
+		log = fopen("/tmp/tbwm-launcher.log", "a");
 		if (log) {
 			fprintf(log, "Forked child PID: %d\n", pid);
 			fclose(log);
 		}
 	} else {
-		log = fopen("/tmp/dwl-launcher.log", "a");
+		log = fopen("/tmp/tbwm-launcher.log", "a");
 		if (log) {
 			fprintf(log, "Fork failed!\n");
 			fclose(log);
@@ -2449,6 +2578,10 @@ keybinding(uint32_t mods, xkb_keysym_t sym)
 	/* Handle launcher mode first */
 	if (launcher_active)
 		return launcherkey(sym);
+
+	/* Handle REPL input mode */
+	if (repl_input_active)
+		return replkey(sym);
 
 	/* Check Scheme keybindings first */
 	if (check_scheme_bindings(CLEANMASK(mods), sym))
@@ -2646,7 +2779,7 @@ maximizenotify(struct wl_listener *listener, void *data)
 {
 	/* This event is raised when a client would like to maximize itself,
 	 * typically because the user clicked on the maximize button on
-	 * client-side decorations. dwl doesn't support maximization, but
+	 * client-side decorations. tbwm doesn't support maximization, but
 	 * to conform to xdg-shell protocol we still must send a configure.
 	 * Since xdg-shell protocol v5 we should ignore request of unsupported
 	 * capabilities, just schedule a empty configure when the client uses <5
@@ -2939,7 +3072,7 @@ apply_or_test:
 		wlr_output_configuration_v1_send_failed(config);
 	wlr_output_configuration_v1_destroy(config);
 
-	/* https://codeberg.org/dwl/dwl/issues/577 */
+	/* https://codeberg.org/tbwm/tbwm/issues/577 */
 	updatemons(NULL, NULL);
 }
 
@@ -2957,7 +3090,7 @@ pointerfocus(Client *c, struct wlr_surface *surface, double sx, double sy,
 	struct timespec now;
 
 	if (surface != seat->pointer_state.focused_surface &&
-			sloppyfocus && time && c && !client_is_unmanaged(c))
+			cfg_sloppyfocus && time && c && !client_is_unmanaged(c))
 		focusclient(c, 0);
 
 	/* If surface is NULL, clear pointer focus */
@@ -3068,6 +3201,8 @@ rendermon(struct wl_listener *listener, void *data)
 	struct wlr_output_state pending = {0};
 	struct timespec now;
 
+	clock_gettime(CLOCK_MONOTONIC, &now);
+
 	/* Render if no XDG clients have an outstanding resize and are visible on
 	 * this monitor. */
 	wl_list_for_each(c, &clients, link) {
@@ -3079,7 +3214,6 @@ rendermon(struct wl_listener *listener, void *data)
 
 skip:
 	/* Let clients know a frame has been rendered */
-	clock_gettime(CLOCK_MONOTONIC, &now);
 	wlr_scene_output_send_frame_done(m->scene_output, &now);
 	wlr_output_state_finish(&pending);
 }
@@ -3174,7 +3308,7 @@ run(char *startup_cmd)
 		die("startup: display_add_socket_auto");
 	if (setenv("WAYLAND_DISPLAY", socket, 1) != 0)
 		die("startup: setenv WAYLAND_DISPLAY failed");
-	fprintf(stderr, "dwl: WAYLAND_DISPLAY=%s DISPLAY=%s\n", socket, getenv("DISPLAY") ? getenv("DISPLAY") : "(none)");
+	fprintf(stderr, "tbwm: WAYLAND_DISPLAY=%s DISPLAY=%s\n", socket, getenv("DISPLAY") ? getenv("DISPLAY") : "(none)");
 
 	/* Start the backend. This will enumerate outputs and inputs, become the DRM
 	 * master, etc */
@@ -3202,7 +3336,7 @@ run(char *startup_cmd)
 	}
 
 	/* Mark stdout as non-blocking to avoid the startup script
-	 * causing dwl to freeze when a user neither closes stdin
+	 * causing tbwm to freeze when a user neither closes stdin
 	 * nor consumes standard input in his startup script */
 
 	if (fd_set_nonblock(STDOUT_FILENO) < 0)
@@ -3224,6 +3358,10 @@ run(char *startup_cmd)
 	/* Start bar update timer */
 	bar_timer = wl_event_loop_add_timer(event_loop, bartimer, NULL);
 	wl_event_source_timer_update(bar_timer, 1000);
+
+	/* Start scroll timer (33ms = ~30fps for smooth scrolling) */
+	scroll_timer = wl_event_loop_add_timer(event_loop, scrolltimer, NULL);
+	wl_event_source_timer_update(scroll_timer, 33);
 
 	/* Run the Wayland event loop. This does not return until you exit the
 	 * compositor. Starting the backend rigged up all of the necessary event
@@ -3321,7 +3459,7 @@ setfullscreen(Client *c, int fullscreen)
 	c->isfullscreen = fullscreen;
 	if (!c->mon || !client_surface(c)->mapped)
 		return;
-	c->bw = fullscreen ? 0 : borderpx;
+	c->bw = fullscreen ? 0 : cfg_borderpx;
 	client_set_fullscreen(c, fullscreen);
 	wlr_scene_node_reparent(&c->scene->node, layers[c->isfullscreen
 			? LyrFS : c->isfloating ? LyrFloat : LyrTile]);
@@ -3395,7 +3533,7 @@ setpsel(struct wl_listener *listener, void *data)
 {
 	/* This event is raised by the seat when a client wants to set the selection,
 	 * usually when the user copies something. wlroots allows compositors to
-	 * ignore such requests if they so choose, but in dwl we always honor them
+	 * ignore such requests if they so choose, but in tbwm we always honor them
 	 */
 	struct wlr_seat_request_set_primary_selection_event *event = data;
 	wlr_seat_set_primary_selection(seat, event->source, event->serial);
@@ -3406,7 +3544,7 @@ setsel(struct wl_listener *listener, void *data)
 {
 	/* This event is raised by the seat when a client wants to set the selection,
 	 * usually when the user copies something. wlroots allows compositors to
-	 * ignore such requests if they so choose, but in dwl we always honor them
+	 * ignore such requests if they so choose, but in tbwm we always honor them
 	 */
 	struct wlr_seat_request_set_selection_event *event = data;
 	wlr_seat_set_selection(seat, event->source, event->serial);
@@ -3422,7 +3560,7 @@ setup(void)
 	for (i = 0; i < (int)LENGTH(sig); i++)
 		sigaction(sig[i], &sa, NULL);
 
-	wlr_log_init(log_level, NULL);
+	wlr_log_init(cfg_log_level, NULL);
 	setupgrid();
 	buildappcache();
 	setup_foot_config();
@@ -3430,11 +3568,10 @@ setup(void)
 	/* Initialize s7 Scheme interpreter */
 	sc = s7_init();
 	if (!sc) {
-		fprintf(stderr, "dwl: warning: failed to initialize s7 Scheme\n");
+		fprintf(stderr, "tbwm: warning: failed to initialize s7 Scheme\n");
 	} else {
-		fprintf(stderr, "dwl: s7 Scheme %s initialized\n", S7_VERSION);
+		fprintf(stderr, "tbwm: s7 Scheme %s initialized\n", S7_VERSION);
 		setup_scheme();
-		load_config();
 	}
 
 	/* The Wayland display is managed by libwayland. It handles accepting
@@ -3451,7 +3588,7 @@ setup(void)
 
 	/* Initialize the scene graph used to lay out windows */
 	scene = wlr_scene_create();
-	root_bg = wlr_scene_rect_create(&scene->tree, 0, 0, rootcolor);
+	root_bg = wlr_scene_rect_create(&scene->tree, 0, 0, cfg_rootcolor);
 	for (i = 0; i < NUM_LAYERS; i++)
 		layers[i] = wlr_scene_tree_create(&scene->tree);
 	drag_icon = wlr_scene_tree_create(&scene->tree);
@@ -3537,6 +3674,15 @@ setup(void)
 	 */
 	wl_list_init(&clients);
 	wl_list_init(&fstack);
+
+	/* Initialize REPL and load config (must be after layers and mons init) */
+	if (sc) {
+		repl_add_line(";;; Welcome to TurboWM!");
+		repl_add_line(";;; Run (help) for commands");
+		repl_add_line(";;; Press Super+Shift+; to toggle, Escape to close");
+		repl_add_line("");
+		load_config();
+	}
 
 	xdg_shell = wlr_xdg_shell_create(dpy, 6);
 	wl_signal_add(&xdg_shell->events.new_toplevel, &new_xdg_toplevel);
@@ -3643,9 +3789,9 @@ setup(void)
 		wl_signal_add(&xwayland->events.new_surface, &new_xwayland_surface);
 
 		setenv("DISPLAY", xwayland->display_name, 1);
-		fprintf(stderr, "dwl: XWayland started on DISPLAY=%s\n", xwayland->display_name);
+		fprintf(stderr, "tbwm: XWayland started on DISPLAY=%s\n", xwayland->display_name);
 	} else {
-		fprintf(stderr, "dwl: ERROR: failed to setup XWayland X server, continuing without it\n");
+		fprintf(stderr, "tbwm: ERROR: failed to setup XWayland X server, continuing without it\n");
 	}
 #endif
 }
@@ -3653,7 +3799,7 @@ setup(void)
 void
 spawn(const Arg *arg)
 {
-	fprintf(stderr, "dwl: spawning %s (DISPLAY=%s WAYLAND_DISPLAY=%s)\n",
+	fprintf(stderr, "tbwm: spawning %s (DISPLAY=%s WAYLAND_DISPLAY=%s)\n",
 		((char **)arg->v)[0],
 		getenv("DISPLAY") ? getenv("DISPLAY") : "(none)",
 		getenv("WAYLAND_DISPLAY") ? getenv("WAYLAND_DISPLAY") : "(none)");
@@ -3661,7 +3807,7 @@ spawn(const Arg *arg)
 		dup2(STDERR_FILENO, STDOUT_FILENO);
 		setsid();
 		execvp(((char **)arg->v)[0], (char **)arg->v);
-		die("dwl: execvp %s failed:", ((char **)arg->v)[0]);
+		die("tbwm: execvp %s failed:", ((char **)arg->v)[0]);
 	}
 }
 
@@ -3707,13 +3853,13 @@ setupgrid(void)
 		return;
 	}
 
-	err = FT_New_Face(ft_library, grid_font_path, 0, &ft_face);
+	err = FT_New_Face(ft_library, cfg_font_path, 0, &ft_face);
 	if (err) {
-		fprintf(stderr, "Failed to load font: %s\n", grid_font_path);
+		fprintf(stderr, "Failed to load font: %s\n", cfg_font_path);
 		return;
 	}
 
-	FT_Set_Pixel_Sizes(ft_face, 0, grid_font_size);
+	FT_Set_Pixel_Sizes(ft_face, 0, cfg_font_size);
 
 	/* Get cell dimensions from font metrics */
 	if (FT_Load_Char(ft_face, 'M', FT_LOAD_DEFAULT) == 0) {
@@ -3721,7 +3867,7 @@ setupgrid(void)
 		cell_height = ft_face->size->metrics.height >> 6;
 	}
 
-	fprintf(stderr, "Grid: %dx%d cells (font: %s)\n", cell_width, cell_height, grid_font_path);
+	fprintf(stderr, "Grid: %dx%d cells (font: %s)\n", cell_width, cell_height, cfg_font_path);
 }
 
 /* ==================== SCHEME BINDINGS ==================== */
@@ -3940,6 +4086,29 @@ static s7_pointer scm_toggle_window_tag(s7_scheme *sc, s7_pointer args)
 	return s7_t(sc);
 }
 
+/* Scheme function: (toggle-repl) - toggle REPL input mode */
+static s7_pointer scm_toggle_repl(s7_scheme *sc, s7_pointer args)
+{
+	togglerepl(NULL);
+	return s7_t(sc);
+}
+
+/* Scheme: (move-window) - start moving focused window with mouse */
+static s7_pointer scm_move_window(s7_scheme *sc, s7_pointer args)
+{
+	Arg arg = {.ui = CurMove};
+	moveresize(&arg);
+	return s7_t(sc);
+}
+
+/* Scheme: (resize-window) - start resizing focused window with mouse */
+static s7_pointer scm_resize_window(s7_scheme *sc, s7_pointer args)
+{
+	Arg arg = {.ui = CurResize};
+	moveresize(&arg);
+	return s7_t(sc);
+}
+
 /* Scheme function: (zoom) - swap focused window with master */
 static s7_pointer scm_zoom(s7_scheme *sc, s7_pointer args)
 {
@@ -4048,7 +4217,28 @@ static s7_pointer scm_window_count(s7_scheme *sc, s7_pointer args)
 static s7_pointer scm_log(s7_scheme *sc, s7_pointer args)
 {
 	if (s7_is_string(s7_car(args)))
-		fprintf(stderr, "dwl-scm: %s\n", s7_string(s7_car(args)));
+		fprintf(stderr, "tbwm-scm: %s\n", s7_string(s7_car(args)));
+	return s7_t(sc);
+}
+
+/* Scheme function: (help) - show available commands */
+static s7_pointer scm_help(s7_scheme *sc, s7_pointer args)
+{
+	repl_add_line("=== TurboWM Commands ===");
+	repl_add_line("(spawn \"cmd\")      - run a program");
+	repl_add_line("(quit)             - exit TurboWM");
+	repl_add_line("(kill-client)      - close focused window");
+	repl_add_line("(toggle-floating)  - toggle floating mode");
+	repl_add_line("(toggle-fullscreen)- toggle fullscreen");
+	repl_add_line("(focus-dir DIR)    - focus window in direction");
+	repl_add_line("(swap-dir DIR)     - swap window in direction");
+	repl_add_line("(view-tag N)       - switch to tag N");
+	repl_add_line("(tag-window N)     - move window to tag N");
+	repl_add_line("(reload-config)    - reload config.scm");
+	repl_add_line("(bind-key K F)     - bind key to function");
+	repl_add_line("(set-border-width N) - set border width");
+	repl_add_line("(set-focus-color C)  - set focus color");
+	repl_add_line("DIR: DIR-LEFT/RIGHT/UP/DOWN");
 	return s7_t(sc);
 }
 
@@ -4060,6 +4250,25 @@ static s7_pointer scm_chvt(s7_scheme *sc, s7_pointer args)
 		return s7_f(sc);
 	arg.ui = s7_integer(s7_car(args));
 	chvt(&arg);
+	return s7_t(sc);
+}
+
+/* Scheme function: (set-title-scroll-mode mode) - set scroll mode (0=truncate, 1=scroll) */
+static s7_pointer scm_set_title_scroll_mode(s7_scheme *sc, s7_pointer args)
+{
+	if (!s7_is_integer(s7_car(args)))
+		return s7_f(sc);
+	title_scroll_mode = s7_integer(s7_car(args)) ? 1 : 0;
+	return s7_t(sc);
+}
+
+/* Scheme function: (set-title-scroll-speed speed) - set scroll speed (pixels per tick) */
+static s7_pointer scm_set_title_scroll_speed(s7_scheme *sc, s7_pointer args)
+{
+	if (!s7_is_integer(s7_car(args)))
+		return s7_f(sc);
+	title_scroll_speed = s7_integer(s7_car(args));
+	if (title_scroll_speed < 1) title_scroll_speed = 1;
 	return s7_t(sc);
 }
 
@@ -4109,12 +4318,12 @@ static s7_pointer scm_bind_key(s7_scheme *sc, s7_pointer args)
 	mods = parse_modifiers(keystr, &keyname);
 	sym = xkb_keysym_from_name(keyname, XKB_KEYSYM_CASE_INSENSITIVE);
 	if (sym == XKB_KEY_NoSymbol) {
-		fprintf(stderr, "dwl-scm: unknown key: %s\n", keyname);
+		fprintf(stderr, "tbwm-scm: unknown key: %s\n", keyname);
 		return s7_f(sc);
 	}
 
 	if (scheme_binding_count >= MAX_SCHEME_BINDINGS) {
-		fprintf(stderr, "dwl-scm: too many keybindings\n");
+		fprintf(stderr, "tbwm-scm: too many keybindings\n");
 		return s7_f(sc);
 	}
 
@@ -4126,7 +4335,7 @@ static s7_pointer scm_bind_key(s7_scheme *sc, s7_pointer args)
 	scheme_bindings[scheme_binding_count].callback = callback;
 	scheme_binding_count++;
 
-	fprintf(stderr, "dwl-scm: bound %s (mod=0x%x, sym=0x%x)\n", keystr, mods, sym);
+	fprintf(stderr, "tbwm-scm: bound %s (mod=0x%x, sym=0x%x)\n", keystr, mods, sym);
 	return s7_t(sc);
 }
 
@@ -4141,14 +4350,249 @@ static s7_pointer scm_unbind_all(s7_scheme *sc, s7_pointer args)
 int check_scheme_bindings(uint32_t mods, xkb_keysym_t sym)
 {
 	int i;
+	xkb_keysym_t sym_lower = xkb_keysym_to_lower(sym);
 	for (i = 0; i < scheme_binding_count; i++) {
-		if (scheme_bindings[i].mod == mods && scheme_bindings[i].keysym == sym) {
+		xkb_keysym_t bound_lower = xkb_keysym_to_lower(scheme_bindings[i].keysym);
+		if (CLEANMASK(scheme_bindings[i].mod) == CLEANMASK(mods) && 
+		    (scheme_bindings[i].keysym == sym || bound_lower == sym_lower)) {
 			s7_call(sc, scheme_bindings[i].callback, s7_nil(sc));
 			return 1;
 		}
 	}
 	return 0;
 }
+
+/* ==================== SCHEME CONFIG SETTERS ==================== */
+
+/* Helper: parse hex color string "#RRGGBB" or "#AARRGGBB" to float[4] */
+static void parse_color(const char *str, float *out) {
+	unsigned int r = 0, g = 0, b = 0, a = 255;
+	if (str[0] == '#') str++;
+	if (strlen(str) == 8) {
+		sscanf(str, "%02x%02x%02x%02x", &a, &r, &g, &b);
+	} else if (strlen(str) == 6) {
+		sscanf(str, "%02x%02x%02x", &r, &g, &b);
+	}
+	out[0] = r / 255.0f;
+	out[1] = g / 255.0f;
+	out[2] = b / 255.0f;
+	out[3] = a / 255.0f;
+}
+
+/* Helper: parse hex color to uint32_t ARGB */
+static uint32_t parse_color_argb(const char *str) {
+	unsigned int r = 0, g = 0, b = 0, a = 255;
+	if (str[0] == '#') str++;
+	if (strlen(str) == 8) {
+		sscanf(str, "%02x%02x%02x%02x", &a, &r, &g, &b);
+	} else if (strlen(str) == 6) {
+		sscanf(str, "%02x%02x%02x", &r, &g, &b);
+	}
+	return (a << 24) | (r << 16) | (g << 8) | b;
+}
+
+/* Scheme: (set-border-width n) */
+static s7_pointer scm_set_border_width(s7_scheme *sc, s7_pointer args) {
+	if (!s7_is_integer(s7_car(args))) return s7_f(sc);
+	cfg_borderpx = s7_integer(s7_car(args));
+	return s7_t(sc);
+}
+
+/* Scheme: (set-sloppy-focus b) */
+static s7_pointer scm_set_sloppy_focus(s7_scheme *sc, s7_pointer args) {
+	cfg_sloppyfocus = s7_boolean(sc, s7_car(args)) ? 1 : 0;
+	return s7_t(sc);
+}
+
+/* Scheme: (set-border-color "#RRGGBB") */
+static s7_pointer scm_set_border_color(s7_scheme *sc, s7_pointer args) {
+	if (!s7_is_string(s7_car(args))) return s7_f(sc);
+	parse_color(s7_string(s7_car(args)), cfg_bordercolor);
+	return s7_t(sc);
+}
+
+/* Scheme: (set-focus-color "#RRGGBB") */
+static s7_pointer scm_set_focus_color(s7_scheme *sc, s7_pointer args) {
+	if (!s7_is_string(s7_car(args))) return s7_f(sc);
+	parse_color(s7_string(s7_car(args)), cfg_focuscolor);
+	return s7_t(sc);
+}
+
+/* Scheme: (set-urgent-color "#RRGGBB") */
+static s7_pointer scm_set_urgent_color(s7_scheme *sc, s7_pointer args) {
+	if (!s7_is_string(s7_car(args))) return s7_f(sc);
+	parse_color(s7_string(s7_car(args)), cfg_urgentcolor);
+	return s7_t(sc);
+}
+
+/* Scheme: (set-root-color "#RRGGBB") */
+static s7_pointer scm_set_root_color(s7_scheme *sc, s7_pointer args) {
+	if (!s7_is_string(s7_car(args))) return s7_f(sc);
+	parse_color(s7_string(s7_car(args)), cfg_rootcolor);
+	if (root_bg)
+		wlr_scene_rect_set_color(root_bg, cfg_rootcolor);
+	return s7_t(sc);
+}
+
+/* Scheme: (set-frame-bg-color "#AARRGGBB") */
+static s7_pointer scm_set_frame_bg_color(s7_scheme *sc, s7_pointer args) {
+	if (!s7_is_string(s7_car(args))) return s7_f(sc);
+	cfg_frame_bg_color = parse_color_argb(s7_string(s7_car(args)));
+	updateframes();
+	updatebars();
+	return s7_t(sc);
+}
+
+/* Scheme: (set-frame-fg-color "#AARRGGBB") */
+static s7_pointer scm_set_frame_fg_color(s7_scheme *sc, s7_pointer args) {
+	if (!s7_is_string(s7_car(args))) return s7_f(sc);
+	cfg_frame_fg_color = parse_color_argb(s7_string(s7_car(args)));
+	updateframes();
+	updatebars();
+	return s7_t(sc);
+}
+
+/* Scheme: (set-font path size) */
+static s7_pointer scm_set_font(s7_scheme *sc, s7_pointer args) {
+	const char *path;
+	int size;
+	if (!s7_is_string(s7_car(args)) || !s7_is_integer(s7_cadr(args)))
+		return s7_f(sc);
+	path = s7_string(s7_car(args));
+	size = s7_integer(s7_cadr(args));
+	strncpy(cfg_font_path, path, sizeof(cfg_font_path) - 1);
+	cfg_font_size = size;
+	/* Reinitialize font */
+	if (ft_face) FT_Done_Face(ft_face);
+	if (FT_New_Face(ft_library, cfg_font_path, 0, &ft_face) == 0) {
+		FT_Set_Pixel_Sizes(ft_face, 0, cfg_font_size);
+		if (FT_Load_Char(ft_face, 'M', FT_LOAD_DEFAULT) == 0) {
+			cell_width = ft_face->glyph->advance.x >> 6;
+			cell_height = ft_face->size->metrics.height >> 6;
+		}
+		fprintf(stderr, "tbwm: font changed to %s %d (%dx%d cells)\n", cfg_font_path, cfg_font_size, cell_width, cell_height);
+		updateframes();
+		updatebars();
+	}
+	return s7_t(sc);
+}
+
+/* Scheme: (set-repeat-rate rate delay) */
+static s7_pointer scm_set_repeat_rate(s7_scheme *sc, s7_pointer args) {
+	if (!s7_is_integer(s7_car(args)) || !s7_is_integer(s7_cadr(args)))
+		return s7_f(sc);
+	cfg_repeat_rate = s7_integer(s7_car(args));
+	cfg_repeat_delay = s7_integer(s7_cadr(args));
+	if (kb_group)
+		wlr_keyboard_set_repeat_info(&kb_group->wlr_group->keyboard, cfg_repeat_rate, cfg_repeat_delay);
+	return s7_t(sc);
+}
+
+/* Scheme: (set-tap-to-click b) */
+static s7_pointer scm_set_tap_to_click(s7_scheme *sc, s7_pointer args) {
+	cfg_tap_to_click = s7_boolean(sc, s7_car(args)) ? 1 : 0;
+	return s7_t(sc);
+}
+
+/* Scheme: (set-natural-scrolling b) */
+static s7_pointer scm_set_natural_scrolling(s7_scheme *sc, s7_pointer args) {
+	cfg_natural_scrolling = s7_boolean(sc, s7_car(args)) ? 1 : 0;
+	return s7_t(sc);
+}
+
+/* Scheme: (set-accel-speed speed) - speed is -1.0 to 1.0 */
+static s7_pointer scm_set_accel_speed(s7_scheme *sc, s7_pointer args) {
+	if (!s7_is_real(s7_car(args))) return s7_f(sc);
+	cfg_accel_speed = s7_real(s7_car(args));
+	return s7_t(sc);
+}
+
+/* Scheme: (add-rule app-id title tags floating monitor)
+ * app-id and title can be #f for "any" */
+static s7_pointer scm_add_rule(s7_scheme *sc, s7_pointer args) {
+	const char *app_id, *title;
+	int tags, floating, monitor;
+	
+	if (cfg_rule_count >= MAX_RULES) {
+		fprintf(stderr, "tbwm-scm: too many rules\n");
+		return s7_f(sc);
+	}
+	
+	app_id = s7_is_string(s7_car(args)) ? s7_string(s7_car(args)) : NULL;
+	title = s7_is_string(s7_cadr(args)) ? s7_string(s7_cadr(args)) : NULL;
+	tags = s7_is_integer(s7_caddr(args)) ? s7_integer(s7_caddr(args)) : 0;
+	floating = s7_boolean(sc, s7_cadddr(args)) ? 1 : 0;
+	monitor = s7_is_integer(s7_list_ref(sc, args, 4)) ? s7_integer(s7_list_ref(sc, args, 4)) : -1;
+	
+	if (app_id)
+		strncpy(cfg_rules[cfg_rule_count].id, app_id, sizeof(cfg_rules[cfg_rule_count].id) - 1);
+	else
+		cfg_rules[cfg_rule_count].id[0] = '\0';
+	
+	if (title)
+		strncpy(cfg_rules[cfg_rule_count].title, title, sizeof(cfg_rules[cfg_rule_count].title) - 1);
+	else
+		cfg_rules[cfg_rule_count].title[0] = '\0';
+	
+	cfg_rules[cfg_rule_count].tags = tags;
+	cfg_rules[cfg_rule_count].isfloating = floating;
+	cfg_rules[cfg_rule_count].monitor = monitor;
+	cfg_rule_count++;
+	
+	return s7_t(sc);
+}
+
+/* Scheme: (clear-rules) */
+static s7_pointer scm_clear_rules(s7_scheme *sc, s7_pointer args) {
+	cfg_rule_count = 0;
+	return s7_t(sc);
+}
+
+/* Scheme: (bind-mouse "M-button1" callback) */
+static s7_pointer scm_bind_mouse(s7_scheme *sc, s7_pointer args) {
+	const char *spec, *rest;
+	uint32_t mods, button = 0;
+	s7_pointer callback;
+	
+	if (!s7_is_string(s7_car(args))) return s7_f(sc);
+	spec = s7_string(s7_car(args));
+	callback = s7_cadr(args);
+	if (!s7_is_procedure(callback)) return s7_f(sc);
+	
+	mods = parse_modifiers(spec, &rest);
+	
+	if (strcmp(rest, "button1") == 0 || strcmp(rest, "BTN_LEFT") == 0)
+		button = BTN_LEFT;
+	else if (strcmp(rest, "button2") == 0 || strcmp(rest, "BTN_MIDDLE") == 0)
+		button = BTN_MIDDLE;
+	else if (strcmp(rest, "button3") == 0 || strcmp(rest, "BTN_RIGHT") == 0)
+		button = BTN_RIGHT;
+	else {
+		fprintf(stderr, "tbwm-scm: unknown button: %s\n", rest);
+		return s7_f(sc);
+	}
+	
+	if (cfg_mouse_binding_count >= MAX_MOUSE_BINDINGS) {
+		fprintf(stderr, "tbwm-scm: too many mouse bindings\n");
+		return s7_f(sc);
+	}
+	
+	s7_gc_protect(sc, callback);
+	cfg_mouse_bindings[cfg_mouse_binding_count].mod = mods;
+	cfg_mouse_bindings[cfg_mouse_binding_count].button = button;
+	cfg_mouse_bindings[cfg_mouse_binding_count].callback = callback;
+	cfg_mouse_binding_count++;
+	
+	return s7_t(sc);
+}
+
+/* Scheme: (clear-mouse-bindings) */
+static s7_pointer scm_clear_mouse_bindings(s7_scheme *sc, s7_pointer args) {
+	cfg_mouse_binding_count = 0;
+	return s7_t(sc);
+}
+
+/* ==================== END SCHEME CONFIG SETTERS ====================  */
 
 void
 setup_scheme(void)
@@ -4165,6 +4609,9 @@ setup_scheme(void)
 	s7_define_function(sc, "kill-client", scm_kill_client, 0, 0, false, "(kill-client) close focused window");
 	s7_define_function(sc, "refresh", scm_refresh, 0, 0, false, "(refresh) refresh layout");
 	s7_define_function(sc, "toggle-launcher", scm_toggle_launcher, 0, 0, false, "(toggle-launcher) open/close launcher");
+	s7_define_function(sc, "toggle-repl", scm_toggle_repl, 0, 0, false, "(toggle-repl) open/close Scheme REPL");
+	s7_define_function(sc, "move-window", scm_move_window, 0, 0, false, "(move-window) start moving focused window with mouse");
+	s7_define_function(sc, "resize-window", scm_resize_window, 0, 0, false, "(resize-window) start resizing focused window with mouse");
 	s7_define_function(sc, "focus-monitor", scm_focus_monitor, 1, 0, false, "(focus-monitor dir) focus monitor in direction");
 	s7_define_function(sc, "tag-monitor", scm_tag_monitor, 1, 0, false, "(tag-monitor dir) send window to monitor");
 	s7_define_function(sc, "bind-key", scm_bind_key, 2, 0, false, "(bind-key keyspec callback) bind key to function");
@@ -4194,7 +4641,33 @@ setup_scheme(void)
 	s7_define_function(sc, "current-tag", scm_current_tag, 0, 0, false, "(current-tag) get current tag number");
 	s7_define_function(sc, "window-count", scm_window_count, 0, 0, false, "(window-count) get number of visible windows");
 	s7_define_function(sc, "log", scm_log, 1, 0, false, "(log msg) print message to stderr");
+	s7_define_function(sc, "help", scm_help, 0, 0, false, "(help) show available commands");
 	s7_define_function(sc, "chvt", scm_chvt, 1, 0, false, "(chvt n) switch to virtual terminal n");
+	s7_define_function(sc, "set-title-scroll-mode", scm_set_title_scroll_mode, 1, 0, false, "(set-title-scroll-mode mode) set title overflow mode: 0=truncate, 1=scroll");
+	s7_define_function(sc, "set-title-scroll-speed", scm_set_title_scroll_speed, 1, 0, false, "(set-title-scroll-speed speed) set scroll speed in pixels per tick");
+
+	/* Configuration setters */
+	s7_define_function(sc, "set-border-width", scm_set_border_width, 1, 0, false, "(set-border-width n) set window border width in pixels");
+	s7_define_function(sc, "set-sloppy-focus", scm_set_sloppy_focus, 1, 0, false, "(set-sloppy-focus b) enable/disable focus follows mouse");
+	s7_define_function(sc, "set-border-color", scm_set_border_color, 1, 0, false, "(set-border-color \"#RRGGBB\") set unfocused border color");
+	s7_define_function(sc, "set-focus-color", scm_set_focus_color, 1, 0, false, "(set-focus-color \"#RRGGBB\") set focused border color");
+	s7_define_function(sc, "set-urgent-color", scm_set_urgent_color, 1, 0, false, "(set-urgent-color \"#RRGGBB\") set urgent border color");
+	s7_define_function(sc, "set-root-color", scm_set_root_color, 1, 0, false, "(set-root-color \"#RRGGBB\") set root/background color");
+	s7_define_function(sc, "set-frame-bg-color", scm_set_frame_bg_color, 1, 0, false, "(set-frame-bg-color \"#AARRGGBB\") set frame background");
+	s7_define_function(sc, "set-frame-fg-color", scm_set_frame_fg_color, 1, 0, false, "(set-frame-fg-color \"#AARRGGBB\") set frame foreground");
+	s7_define_function(sc, "set-font", scm_set_font, 2, 0, false, "(set-font path size) set grid font");
+	s7_define_function(sc, "set-repeat-rate", scm_set_repeat_rate, 2, 0, false, "(set-repeat-rate rate delay) set key repeat");
+	s7_define_function(sc, "set-tap-to-click", scm_set_tap_to_click, 1, 0, false, "(set-tap-to-click b) enable/disable tap to click");
+	s7_define_function(sc, "set-natural-scrolling", scm_set_natural_scrolling, 1, 0, false, "(set-natural-scrolling b) enable/disable natural scrolling");
+	s7_define_function(sc, "set-accel-speed", scm_set_accel_speed, 1, 0, false, "(set-accel-speed n) set mouse acceleration (-1.0 to 1.0)");
+	
+	/* Window rules */
+	s7_define_function(sc, "add-rule", scm_add_rule, 5, 0, false, "(add-rule app-id title tags floating monitor) add window rule");
+	s7_define_function(sc, "clear-rules", scm_clear_rules, 0, 0, false, "(clear-rules) clear all window rules");
+	
+	/* Mouse bindings */
+	s7_define_function(sc, "bind-mouse", scm_bind_mouse, 2, 0, false, "(bind-mouse \"M-button1\" callback) bind mouse button");
+	s7_define_function(sc, "clear-mouse-bindings", scm_clear_mouse_bindings, 0, 0, false, "(clear-mouse-bindings) clear all mouse bindings");
 
 	/* Define constants for directions */
 	s7_define_variable(sc, "DIR-LEFT", s7_make_integer(sc, 0));
@@ -4208,7 +4681,55 @@ setup_scheme(void)
 }
 
 static const char *default_config = 
-";;; dwl config.scm - Scheme configuration\n"
+";;; TurboWM config.scm - Scheme configuration\n"
+";;; All settings can be changed at runtime with (reload-config)\n"
+"\n"
+";;;; ==================== APPEARANCE ====================\n"
+"\n"
+";; Window borders\n"
+"(set-border-width 1)\n"
+"(set-border-color \"#444444\")   ; unfocused windows\n"
+"(set-focus-color \"#005577\")    ; focused window\n"
+"(set-urgent-color \"#ff0000\")   ; urgent windows\n"
+"\n"
+";; Frame colors (title bar and decorations)\n"
+";; Format: #AARRGGBB (alpha, red, green, blue)\n"
+"(set-frame-bg-color \"#ff0000aa\")  ; blue background\n"
+"(set-frame-fg-color \"#ffaaaaaa\")  ; gray text/lines\n"
+"\n"
+";; Root/desktop background color\n"
+"(set-root-color \"#000000\")\n"
+"\n"
+";; Title bar scrolling\n"
+"(set-title-scroll-mode 1)   ; 1 = scroll, 0 = truncate with ...\n"
+"(set-title-scroll-speed 30) ; pixels per second\n"
+"\n"
+";;;; ==================== BEHAVIOR ====================\n"
+"\n"
+";; Focus follows mouse (sloppy focus)\n"
+"(set-sloppy-focus #t)\n"
+"\n"
+";; Keyboard repeat rate and delay (chars/sec, ms before repeat)\n"
+"(set-repeat-rate 25 600)\n"
+"\n"
+";;;; ==================== INPUT DEVICES ====================\n"
+"\n"
+";; Trackpad settings\n"
+"(set-tap-to-click #t)\n"
+"(set-natural-scrolling #f)\n"
+"(set-accel-speed 0.0)  ; -1.0 to 1.0\n"
+"\n"
+";;;; ==================== MOUSE BINDINGS ====================\n"
+";; (bind-mouse \"MODIFIER-button\" callback)\n"
+";; Buttons: button1 (left), button2 (middle), button3 (right)\n"
+"\n"
+";; Super+Left: move window\n"
+"(bind-mouse \"M-button1\" (lambda () (move-window)))\n"
+";; Super+Right: resize window\n"
+"(bind-mouse \"M-button3\" (lambda () (resize-window)))\n"
+"\n"
+";;;; ==================== KEYBINDINGS ====================\n"
+";; Modifiers: M = Super, S = Shift, C = Control, A = Alt\n"
 "\n"
 ";; Terminal\n"
 "(bind-key \"M-Return\" (lambda () (spawn \"foot\")))\n"
@@ -4219,7 +4740,7 @@ static const char *default_config =
 ";; Close window\n"
 "(bind-key \"M-q\" (lambda () (kill-client)))\n"
 "\n"
-";; Quit dwl\n"
+";; Quit TurboWM\n"
 "(bind-key \"M-S-e\" (lambda () (quit)))\n"
 "\n"
 ";; Focus direction (vim keys)\n"
@@ -4269,10 +4790,22 @@ static const char *default_config =
 ";; Refresh layout\n"
 "(bind-key \"M-S-r\" (lambda () (refresh)))\n"
 "\n"
-";; Reload config\n"
+";; Reload config (hot reload!)\n"
 "(bind-key \"M-S-c\" (lambda () (reload-config) (log \"Config reloaded!\")))\n"
 "\n"
-"(log \"dwl config loaded!\")\n";
+";; REPL - Scheme console on the desktop\n"
+";; Super+Shift+; (Win+:) to open, Escape to close\n"
+"(bind-key \"M-S-colon\" (lambda () (toggle-repl)))\n"
+"\n"
+";; TTY switching (Ctrl+Alt+F1-F6)\n"
+"(bind-key \"C-A-F1\" (lambda () (chvt 1)))\n"
+"(bind-key \"C-A-F2\" (lambda () (chvt 2)))\n"
+"(bind-key \"C-A-F3\" (lambda () (chvt 3)))\n"
+"(bind-key \"C-A-F4\" (lambda () (chvt 4)))\n"
+"(bind-key \"C-A-F5\" (lambda () (chvt 5)))\n"
+"(bind-key \"C-A-F6\" (lambda () (chvt 6)))\n"
+"\n"
+"(log \"TurboWM config loaded!\")\n";
 
 void
 load_config(void)
@@ -4284,13 +4817,13 @@ load_config(void)
 	if (!home || !sc)
 		return;
 
-	snprintf(dir, sizeof(dir), "%s/.config/dwl", home);
+	snprintf(dir, sizeof(dir), "%s/.config/tbwm", home);
 	snprintf(path, sizeof(path), "%s/config.scm", dir);
 	
 	f = fopen(path, "r");
 	if (!f) {
 		/* Create default config */
-		fprintf(stderr, "dwl: creating default config at %s\n", path);
+		fprintf(stderr, "tbwm: creating default config at %s\n", path);
 		
 		/* Create directory */
 		mkdir(dir, 0755);
@@ -4300,7 +4833,7 @@ load_config(void)
 			fputs(default_config, f);
 			fclose(f);
 		} else {
-			fprintf(stderr, "dwl: warning: could not create config file\n");
+			fprintf(stderr, "tbwm: warning: could not create config file\n");
 			/* Evaluate default config directly */
 			s7_eval_c_string(sc, default_config);
 			return;
@@ -4310,7 +4843,7 @@ load_config(void)
 	
 	if (f) {
 		fclose(f);
-		fprintf(stderr, "dwl: loading config from %s\n", path);
+		fprintf(stderr, "tbwm: loading config from %s\n", path);
 		s7_load(sc, path);
 	}
 }
@@ -4386,7 +4919,7 @@ setup_foot_config(void)
 				while ((n = fread(buf, 1, sizeof(buf), src)) > 0)
 					fwrite(buf, 1, n, dst);
 				fclose(dst);
-				fprintf(stderr, "dwl: installed font to %s\n", fontdst);
+				fprintf(stderr, "tbwm: installed font to %s\n", fontdst);
 
 				/* Update font cache */
 				if (fork() == 0) {
@@ -4401,7 +4934,7 @@ setup_foot_config(void)
 	/* Setup foot config */
 	snprintf(dir, sizeof(dir), "%s/.config/foot", home);
 	snprintf(path, sizeof(path), "%s/foot.ini", dir);
-	snprintf(backup, sizeof(backup), "%s/foot.ini.dwl-backup", dir);
+	snprintf(backup, sizeof(backup), "%s/foot.ini.tbwm-backup", dir);
 
 	/* Create directory if needed */
 	if (stat(dir, &st) != 0)
@@ -4409,7 +4942,7 @@ setup_foot_config(void)
 
 	/* Back up existing config if it exists and no backup exists yet */
 	if (stat(path, &st) == 0 && stat(backup, &st) != 0) {
-		fprintf(stderr, "dwl: backing up existing foot.ini to %s\n", backup);
+		fprintf(stderr, "tbwm: backing up existing foot.ini to %s\n", backup);
 		rename(path, backup);
 	}
 
@@ -4418,9 +4951,9 @@ setup_foot_config(void)
 	if (f) {
 		fputs(foot_config, f);
 		fclose(f);
-		fprintf(stderr, "dwl: installed foot config at %s\n", path);
+		fprintf(stderr, "tbwm: installed foot config at %s\n", path);
 	} else {
-		fprintf(stderr, "dwl: warning: could not write foot config\n");
+		fprintf(stderr, "tbwm: warning: could not write foot config\n");
 	}
 }
 
@@ -4489,8 +5022,31 @@ buildappcache(void)
 int
 bartimer(void *data)
 {
+	/* Used for clock updates */
 	updatebars();
 	wl_event_source_timer_update(bar_timer, 1000);
+	return 0;
+}
+
+int
+scrolltimer(void *data)
+{
+	/* Handle smooth scrolling for both bar tabs and window titlebars */
+	if (!title_scroll_mode || !any_title_needs_scroll) {
+		/* No scrolling needed, check again later */
+		wl_event_source_timer_update(scroll_timer, 100);
+		return 0;
+	}
+	
+	/* Advance scroll offset (~1 pixel per 33ms at speed 30) */
+	title_scroll_offset += 1;
+	
+	/* Update bar and frames */
+	updatebars();
+	updateframes();
+	
+	/* Continue at 30fps */
+	wl_event_source_timer_update(scroll_timer, 33);
 	return 0;
 }
 
@@ -4501,8 +5057,21 @@ updatebars(void)
 	/* Don't update if not fully initialized */
 	if (!layers[LyrOverlay])
 		return;
+	/* Reset scroll flag - will be set by updatebar/updateframe if needed */
+	any_title_needs_scroll = 0;
 	wl_list_for_each(m, &mons, link)
 		updatebar(m);
+}
+
+void
+updateframes(void)
+{
+	Client *c;
+	/* Update all client frames for scrolling titles */
+	if (!title_scroll_mode)
+		return;
+	wl_list_for_each(c, &clients, link)
+		updateframe(c);
 }
 
 void
@@ -4512,6 +5081,205 @@ togglelauncher(const Arg *arg)
 	launcher_input[0] = '\0';
 	launcher_input_len = 0;
 	updatebars();
+}
+
+void
+togglerepl(const Arg *arg)
+{
+	repl_input_active = !repl_input_active;
+	repl_input[0] = '\0';
+	repl_input_len = 0;
+	updatebars();
+	updaterepl();
+}
+
+void
+repl_add_line(const char *line)
+{
+	if (repl_history_count < REPL_HISTORY_LINES) {
+		strncpy(repl_history[repl_history_count], line, REPL_LINE_LEN - 1);
+		repl_history[repl_history_count][REPL_LINE_LEN - 1] = '\0';
+		repl_history_count++;
+	} else {
+		/* Scroll buffer up */
+		int i;
+		for (i = 0; i < REPL_HISTORY_LINES - 1; i++) {
+			strcpy(repl_history[i], repl_history[i + 1]);
+		}
+		strncpy(repl_history[REPL_HISTORY_LINES - 1], line, REPL_LINE_LEN - 1);
+		repl_history[REPL_HISTORY_LINES - 1][REPL_LINE_LEN - 1] = '\0';
+	}
+	repl_scroll_offset = 0;
+	updaterepl();
+}
+
+void
+repl_eval(void)
+{
+	char prompt_line[REPL_LINE_LEN];
+	s7_pointer result;
+	const char *result_str;
+	
+	if (repl_input_len == 0)
+		return;
+	
+	/* Add the input line with prompt to history */
+	snprintf(prompt_line, sizeof(prompt_line), "> %s", repl_input);
+	repl_add_line(prompt_line);
+	
+	/* Evaluate the Scheme expression */
+	if (sc) {
+		result = s7_eval_c_string(sc, repl_input);
+		result_str = s7_object_to_c_string(sc, result);
+		if (result_str) {
+			/* Split multi-line results */
+			char *copy = strdup(result_str);
+			char *line = strtok(copy, "\n");
+			while (line) {
+				repl_add_line(line);
+				line = strtok(NULL, "\n");
+			}
+			free(copy);
+			free((void *)result_str);
+		}
+	} else {
+		repl_add_line("Error: Scheme interpreter not initialized");
+	}
+	
+	/* Clear input */
+	repl_input[0] = '\0';
+	repl_input_len = 0;
+	updatebars();
+}
+
+int
+replkey(xkb_keysym_t sym)
+{
+	if (sym == XKB_KEY_Escape) {
+		repl_input_active = 0;
+		repl_input[0] = '\0';
+		repl_input_len = 0;
+		updatebars();
+		return 1;
+	}
+
+	if (sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter) {
+		repl_eval();
+		return 1;
+	}
+
+	if (sym == XKB_KEY_BackSpace) {
+		if (repl_input_len > 0) {
+			repl_input[--repl_input_len] = '\0';
+			updatebars();
+		}
+		return 1;
+	}
+
+	/* Page Up/Down for scrolling history */
+	if (sym == XKB_KEY_Page_Up) {
+		int visible_lines = sgeom.height / cell_height - 2;
+		if (repl_scroll_offset < repl_history_count - visible_lines)
+			repl_scroll_offset += visible_lines / 2;
+		updaterepl();
+		return 1;
+	}
+
+	if (sym == XKB_KEY_Page_Down) {
+		repl_scroll_offset -= sgeom.height / cell_height / 2;
+		if (repl_scroll_offset < 0)
+			repl_scroll_offset = 0;
+		updaterepl();
+		return 1;
+	}
+
+	/* Regular character input */
+	if (sym >= 0x20 && sym <= 0x7e &&
+	    repl_input_len < (int)sizeof(repl_input) - 1) {
+		repl_input[repl_input_len++] = (char)sym;
+		repl_input[repl_input_len] = '\0';
+		updatebars();
+		return 1;
+	}
+
+	return 1; /* Consume all keys in REPL mode */
+}
+
+void
+updaterepl(void)
+{
+	struct TitleBuffer *tb;
+	uint32_t *pixels;
+	int width, height;
+	int x, y, i, line_idx;
+	int visible_lines;
+	const char *line;
+	
+	if (!selmon || !layers[LyrBg])
+		return;
+	
+	/* Hide REPL if not visible */
+	if (!repl_visible) {
+		if (repl_buffer)
+			wlr_scene_node_set_enabled(&repl_buffer->node, 0);
+		return;
+	}
+	
+	width = sgeom.width;
+	height = sgeom.height;
+	
+	if (width <= 0 || height <= 0)
+		return;
+	
+	/* Create buffer for REPL background */
+	tb = ecalloc(1, sizeof(*tb));
+	tb->stride = width * 4;
+	tb->data = ecalloc(1, tb->stride * height);
+	wlr_buffer_init(&tb->base, &titlebuf_impl, width, height);
+	pixels = tb->data;
+	
+	/* Fill with background color */
+	for (i = 0; i < width * height; i++)
+		pixels[i] = 0xFF000000;  /* black background for REPL */
+	
+	/* Calculate visible lines (leave space for bar at top) */
+	visible_lines = (height - cell_height) / cell_height;
+	
+	/* Render history lines from bottom up */
+	y = height - cell_height * 2;  /* Start from bottom, leave space for bar */
+	
+	for (i = 0; i < visible_lines && i + repl_scroll_offset < repl_history_count; i++) {
+		line_idx = repl_history_count - 1 - i - repl_scroll_offset;
+		if (line_idx < 0)
+			break;
+		
+		line = repl_history[line_idx];
+		x = cell_width;
+		
+		/* Render the line */
+		while (*line && x < width - cell_width) {
+			render_char_to_buffer(pixels, width, height, x, y, (unsigned char)*line, cfg_frame_fg_color);
+			x += cell_width;
+			line++;
+		}
+		
+		y -= cell_height;
+	}
+	
+	/* Show scroll indicator if not at bottom */
+	if (repl_scroll_offset > 0) {
+		x = width - cell_width * 3;
+		render_char_to_buffer(pixels, width, height, x, height - cell_height * 2, 
+			0x25BC, cfg_frame_fg_color); /* ▼ */
+	}
+	
+	/* Create or update the REPL buffer */
+	if (!repl_buffer)
+		repl_buffer = wlr_scene_buffer_create(layers[LyrBg], NULL);
+	wlr_scene_node_set_enabled(&repl_buffer->node, 1);
+	wlr_scene_node_set_position(&repl_buffer->node, sgeom.x, sgeom.y);
+	wlr_scene_buffer_set_buffer(repl_buffer, &tb->base);
+	wlr_buffer_drop(&tb->base);
 }
 
 void
@@ -4552,25 +5320,39 @@ updatebar(Monitor *m)
 
 	/* Fill background */
 	for (i = 0; i < width * cell_height; i++)
-		pixels[i] = frame_bg_color;
+		pixels[i] = cfg_frame_bg_color;
 
 	x = 0;
 
-	if (launcher_active) {
+	if (repl_input_active) {
+		/* === REPL INPUT MODE === */
+		prompt = "Scheme> ";
+		for (i = 0; prompt[i] && x < width; i++) {
+			render_char_to_buffer(pixels, width, cell_height, x, 0, prompt[i], cfg_frame_fg_color);
+			x += cell_width;
+		}
+		/* Input text */
+		for (i = 0; i < repl_input_len && x < width; i++) {
+			render_char_to_buffer(pixels, width, cell_height, x, 0, repl_input[i], cfg_frame_fg_color);
+			x += cell_width;
+		}
+		/* Cursor */
+		render_char_to_buffer(pixels, width, cell_height, x, 0, '_', cfg_frame_fg_color);
+	} else if (launcher_active) {
 		/* === LAUNCHER MODE === */
 		prompt = "Launcher> ";
 		for (i = 0; prompt[i] && x < width; i++) {
-			render_char_to_buffer(pixels, width, cell_height, x, 0, prompt[i], frame_fg_color);
+			render_char_to_buffer(pixels, width, cell_height, x, 0, prompt[i], cfg_frame_fg_color);
 			x += cell_width;
 		}
 		/* Input text */
 		for (i = 0; i < launcher_input_len && x < width; i++) {
-			render_char_to_buffer(pixels, width, cell_height, x, 0, launcher_input[i], frame_fg_color);
+			render_char_to_buffer(pixels, width, cell_height, x, 0, launcher_input[i], cfg_frame_fg_color);
 			x += cell_width;
 		}
 		/* Separator */
 		x += cell_width;
-		render_char_to_buffer(pixels, width, cell_height, x, 0, '|', frame_fg_color);
+		render_char_to_buffer(pixels, width, cell_height, x, 0, '|', cfg_frame_fg_color);
 		x += cell_width * 2;
 
 		/* Suggestions - only if there's input */
@@ -4586,8 +5368,8 @@ updatebar(Monitor *m)
 
 					/* Highlight selected suggestion */
 					if (shown == launcher_selection) {
-						bg = frame_fg_color;
-						fg = frame_bg_color;
+						bg = cfg_frame_fg_color;
+						fg = cfg_frame_bg_color;
 						/* Draw background */
 						for (py = 0; py < cell_height; py++) {
 							for (px = x; px < x + (len + 2) * cell_width && px < width; px++) {
@@ -4595,7 +5377,7 @@ updatebar(Monitor *m)
 							}
 						}
 					} else {
-						fg = frame_fg_color;
+						fg = cfg_frame_fg_color;
 					}
 
 					render_char_to_buffer(pixels, width, cell_height, x, 0, '[', fg);
@@ -4623,17 +5405,17 @@ updatebar(Monitor *m)
 				}
 			}
 
-			bg = frame_bg_color;
-			fg = frame_fg_color;
+			bg = cfg_frame_bg_color;
+			fg = cfg_frame_fg_color;
 
 			/* Highlight selected tag */
 			if (m->tagset[m->seltags] & (1 << tag)) {
-				bg = frame_fg_color;
-				fg = frame_bg_color;
+				bg = cfg_frame_fg_color;
+				fg = cfg_frame_bg_color;
 			}
 
 			/* Draw tag background if highlighted */
-			if (bg != frame_bg_color) {
+			if (bg != cfg_frame_bg_color) {
 				for (py = 0; py < cell_height; py++) {
 					for (px = x; px < x + 3 * cell_width && px < width; px++) {
 						pixels[py * width + px] = bg;
@@ -4652,7 +5434,7 @@ updatebar(Monitor *m)
 
 		/* Separator */
 		x += cell_width / 2;
-		render_char_to_buffer(pixels, width, cell_height, x, 0, '|', frame_fg_color);
+		render_char_to_buffer(pixels, width, cell_height, x, 0, '|', cfg_frame_fg_color);
 		x += cell_width * 2;
 
 		/* Window tabs */
@@ -4686,12 +5468,12 @@ updatebar(Monitor *m)
 				if (!title) title = "?";
 
 				is_focused = (c == focustop(m));
-				bg = frame_bg_color;
-				fg = frame_fg_color;
+				bg = cfg_frame_bg_color;
+				fg = cfg_frame_fg_color;
 
 				if (is_focused) {
-					bg = frame_fg_color;
-					fg = frame_bg_color;
+					bg = cfg_frame_fg_color;
+					fg = cfg_frame_bg_color;
 				}
 
 				/* Draw background for focused */
@@ -4708,15 +5490,46 @@ updatebar(Monitor *m)
 
 				title_max = tab_width_cells - 2;
 				title_len = strlen(title);
-				for (i = 0; i < title_max - 1 && i < title_len && x < width - cell_width; i++) {
-					render_char_to_buffer(pixels, width, cell_height, x, 0, title[i], fg);
+				
+				if (title_len > title_max - 1 && title_scroll_mode) {
+					/* Smooth pixel-based scrolling for top bar tabs */
+					int scroll_chars = title_len + 2; /* +2 for "  " separator */
+					int total_scroll_width = scroll_chars * cell_width;
+					int pixel_offset = title_scroll_offset % total_scroll_width;
+					int display_width = (title_max - 1) * cell_width;
+					int text_start_x = x;
+					int text_end_x = x + display_width;
+					int char_idx;
+					
+					any_title_needs_scroll = 1;
+					
+					for (char_idx = 0; char_idx < scroll_chars + title_max; char_idx++) {
+						int src_char = char_idx % scroll_chars;
+						int draw_x = text_start_x + char_idx * cell_width - pixel_offset;
+						unsigned long cp;
+						
+						cp = (src_char < title_len) ? (unsigned char)title[src_char] : ' ';
+						render_char_clipped(pixels, width, cell_height, draw_x, 0, cp, fg, text_start_x, text_end_x);
+					}
+					x += display_width;
+				} else if (title_len > title_max - 1 && title_max > 3) {
+					/* Truncation mode with ellipsis */
+					for (i = 0; i < title_max - 4 && i < title_len && x < width - cell_width; i++) {
+						render_char_to_buffer(pixels, width, cell_height, x, 0, (unsigned char)title[i], fg);
+						x += cell_width;
+					}
+					render_char_to_buffer(pixels, width, cell_height, x, 0, '.', fg);
 					x += cell_width;
-				}
-				if (title_len > title_max - 1 && title_max > 3) {
-					/* Add ... for truncation */
+					render_char_to_buffer(pixels, width, cell_height, x, 0, '.', fg);
+					x += cell_width;
 					render_char_to_buffer(pixels, width, cell_height, x, 0, '.', fg);
 					x += cell_width;
 				} else {
+					/* Title fits */
+					for (i = 0; i < title_max - 1 && i < title_len && x < width - cell_width; i++) {
+						render_char_to_buffer(pixels, width, cell_height, x, 0, (unsigned char)title[i], fg);
+						x += cell_width;
+					}
 					x += cell_width;
 				}
 
@@ -4738,17 +5551,17 @@ updatebar(Monitor *m)
 
 		if (right_x > x) {
 			x = right_x;
-			render_char_to_buffer(pixels, width, cell_height, x, 0, '|', frame_fg_color);
+			render_char_to_buffer(pixels, width, cell_height, x, 0, '|', cfg_frame_fg_color);
 			x += cell_width * 2;
 			for (i = 0; datebuf[i]; i++) {
-				render_char_to_buffer(pixels, width, cell_height, x, 0, datebuf[i], frame_fg_color);
+				render_char_to_buffer(pixels, width, cell_height, x, 0, datebuf[i], cfg_frame_fg_color);
 				x += cell_width;
 			}
 			x += cell_width;
-			render_char_to_buffer(pixels, width, cell_height, x, 0, '|', frame_fg_color);
+			render_char_to_buffer(pixels, width, cell_height, x, 0, '|', cfg_frame_fg_color);
 			x += cell_width * 2;
 			for (i = 0; timebuf[i]; i++) {
-				render_char_to_buffer(pixels, width, cell_height, x, 0, timebuf[i], frame_fg_color);
+				render_char_to_buffer(pixels, width, cell_height, x, 0, timebuf[i], cfg_frame_fg_color);
 				x += cell_width;
 			}
 		}
@@ -4895,6 +5708,42 @@ render_char_to_buffer(uint32_t *pixels, int buf_w, int buf_h, int x, int y,
 	}
 }
 
+/* Render character with horizontal clipping bounds */
+void
+render_char_clipped(uint32_t *pixels, int buf_w, int buf_h, int x, int y,
+                    unsigned long charcode, uint32_t color, int clip_left, int clip_right)
+{
+	FT_GlyphSlot slot;
+	int gx, gy, px, py;
+	unsigned char v, r, g, b;
+
+	if (FT_Load_Char(ft_face, charcode, FT_LOAD_RENDER)) {
+		if (charcode != '?' && FT_Load_Char(ft_face, '?', FT_LOAD_RENDER))
+			return;
+	}
+
+	slot = ft_face->glyph;
+	r = (color >> 16) & 0xFF;
+	g = (color >> 8) & 0xFF;
+	b = color & 0xFF;
+
+	for (gy = 0; gy < (int)slot->bitmap.rows; gy++) {
+		py = y + (cell_height - slot->bitmap_top) + gy - 4;
+		if (py < 0 || py >= buf_h) continue;
+		for (gx = 0; gx < (int)slot->bitmap.width; gx++) {
+			px = x + slot->bitmap_left + gx;
+			if (px < clip_left || px >= clip_right) continue;
+			if (px < 0 || px >= buf_w) continue;
+			v = slot->bitmap.buffer[gy * slot->bitmap.pitch + gx];
+			if (v > 0)
+				pixels[py * buf_w + px] = 0xFF000000 |
+					((r * v / 255) << 16) |
+					((g * v / 255) << 8) |
+					(b * v / 255);
+		}
+	}
+}
+
 void
 updateframe(Client *c)
 {
@@ -4970,7 +5819,7 @@ updateframe(Client *c)
 	else                     br_char = 0x255D; /* ╝ */
 
 	/* All windows use blue background */
-	bg_color = frame_bg_color;
+	bg_color = cfg_frame_bg_color;
 
 	/* === TOP FRAME === */
 	tb = ecalloc(1, sizeof(*tb));
@@ -4982,8 +5831,8 @@ updateframe(Client *c)
 		pixels[i] = bg_color;
 
 	/* Format: ╔═ title ═╗ with horizontal lines filling the rest */
-	render_char_to_buffer(pixels, width, cell_height, 0, 0, tl_char, frame_fg_color);
-	render_char_to_buffer(pixels, width, cell_height, cell_width, 0, h_line, frame_fg_color);
+	render_char_to_buffer(pixels, width, cell_height, 0, 0, tl_char, cfg_frame_fg_color);
+	render_char_to_buffer(pixels, width, cell_height, cell_width, 0, h_line, cfg_frame_fg_color);
 	
 	/* Calculate title positioning */
 	title_len = 0;
@@ -4994,74 +5843,146 @@ updateframe(Client *c)
 	{
 		int avail_cells = (width / cell_width) - 6;
 		int title_cells = title_len;
-		int ellipsis = 0;
+		int needs_overflow = (title_cells > avail_cells);
 		int title_start_cell, title_x, fill_x, py, px;
 		uint32_t title_bg, title_fg;
 		
-		if (title_cells > avail_cells) {
-			title_cells = avail_cells - 3; /* room for "..." */
-			ellipsis = 1;
-		}
-		if (title_cells < 0) title_cells = 0;
+		/* Update scroll flag for this client */
+		c->needs_title_scroll = (needs_overflow && title_scroll_mode) ? 1 : 0;
+		if (c->needs_title_scroll)
+			any_title_needs_scroll = 1;
 		
 		/* Fill cells 2 to (width/cell - 2) with h_line first */
 		for (fill_x = cell_width * 2; fill_x < width - cell_width * 2; fill_x += cell_width) {
-			render_char_to_buffer(pixels, width, cell_height, fill_x, 0, h_line, frame_fg_color);
+			render_char_to_buffer(pixels, width, cell_height, fill_x, 0, h_line, cfg_frame_fg_color);
 		}
 		
 		/* Title colors: inverted only for focused window */
 		if (focused) {
-			title_bg = frame_fg_color;  /* gray background */
-			title_fg = bg_color;        /* blue text */
+			title_bg = cfg_frame_fg_color;  /* gray background */
+			title_fg = bg_color;            /* blue text */
 		} else {
-			title_bg = bg_color;        /* blue background */
-			title_fg = frame_fg_color;  /* gray text */
+			title_bg = bg_color;            /* blue background */
+			title_fg = cfg_frame_fg_color;  /* gray text */
 		}
 		
 		/* Title starts at cell 2 */
 		title_start_cell = 2;
 		title_x = title_start_cell * cell_width;
 		
-		/* Fill background for title + possible ellipsis */
-		{
-			int title_total_cells = title_cells + (ellipsis ? 3 : 0);
-			int bg_start = title_x;
-			int bg_end = title_x + title_total_cells * cell_width;
+		if (needs_overflow && title_scroll_mode) {
+			/* Smooth pixel-based scrolling: title + "  " loops around */
+			int scroll_chars = title_len + 2; /* +2 for "  " separator */
+			int total_scroll_width = scroll_chars * cell_width;
+			int pixel_offset = title_scroll_offset % total_scroll_width;
+			int display_width = avail_cells * cell_width;
+			int bg_end = title_x + display_width;
 			if (bg_end > width - cell_width * 2)
 				bg_end = width - cell_width * 2;
+			
+			/* Fill background for display area */
 			for (py = 0; py < cell_height; py++) {
-				for (px = bg_start; px < bg_end; px++) {
+				for (px = title_x; px < bg_end; px++) {
 					pixels[py * width + px] = title_bg;
 				}
 			}
-		}
-		
-		/* Title text - decode UTF-8 properly */
-		{
-			int pos = 0;
-			int rendered = 0;
-			while (rendered < title_cells && title[pos]) {
-				unsigned long cp = utf8_decode(title, &pos);
-				render_char_to_buffer(pixels, width, cell_height, title_x, 0, cp, title_fg);
-				title_x += cell_width;
-				rendered++;
+			
+			/* Render characters at pixel-offset positions with clipping */
+			{
+				int char_idx;
+				int draw_x;
+				int clip_left = title_x;
+				int clip_right = bg_end;
+				for (char_idx = 0; char_idx < scroll_chars + avail_cells; char_idx++) {
+					int src_char = char_idx % scroll_chars;
+					int char_pixel_pos = char_idx * cell_width - pixel_offset;
+					unsigned long cp;
+					draw_x = title_x + char_pixel_pos;
+					
+					if (src_char < title_len) {
+						/* Get character from title */
+						int pos = 0;
+						int ci = 0;
+						while (ci < src_char && title[pos]) {
+							utf8_decode(title, &pos);
+							ci++;
+						}
+						cp = title[pos] ? utf8_decode(title, &pos) : ' ';
+					} else {
+						cp = ' '; /* separator spaces */
+					}
+					render_char_clipped(pixels, width, cell_height, draw_x, 0, cp, title_fg, clip_left, clip_right);
+				}
 			}
-		}
-		
-		/* Ellipsis if needed */
-		if (ellipsis) {
+		} else if (needs_overflow) {
+			/* Truncate mode with ellipsis */
+			int ellipsis_cells = 3;
+			int text_cells = avail_cells - ellipsis_cells;
+			if (text_cells < 0) text_cells = 0;
+			
+			/* Fill background */
+			{
+				int bg_start = title_x;
+				int bg_end = title_x + avail_cells * cell_width;
+				if (bg_end > width - cell_width * 2)
+					bg_end = width - cell_width * 2;
+				for (py = 0; py < cell_height; py++) {
+					for (px = bg_start; px < bg_end; px++) {
+						pixels[py * width + px] = title_bg;
+					}
+				}
+			}
+			
+			/* Render title text */
+			{
+				int pos = 0;
+				int rendered = 0;
+				while (rendered < text_cells && title[pos]) {
+					unsigned long cp = utf8_decode(title, &pos);
+					render_char_to_buffer(pixels, width, cell_height, title_x, 0, cp, title_fg);
+					title_x += cell_width;
+					rendered++;
+				}
+			}
+			
+			/* Ellipsis */
 			render_char_to_buffer(pixels, width, cell_height, title_x, 0, '.', title_fg);
 			title_x += cell_width;
 			render_char_to_buffer(pixels, width, cell_height, title_x, 0, '.', title_fg);
 			title_x += cell_width;
 			render_char_to_buffer(pixels, width, cell_height, title_x, 0, '.', title_fg);
-			title_x += cell_width;
+		} else {
+			/* Title fits - render normally */
+			/* Fill background */
+			{
+				int bg_start = title_x;
+				int bg_end = title_x + title_cells * cell_width;
+				if (bg_end > width - cell_width * 2)
+					bg_end = width - cell_width * 2;
+				for (py = 0; py < cell_height; py++) {
+					for (px = bg_start; px < bg_end; px++) {
+						pixels[py * width + px] = title_bg;
+					}
+				}
+			}
+			
+			/* Render title */
+			{
+				int pos = 0;
+				int rendered = 0;
+				while (rendered < title_cells && title[pos]) {
+					unsigned long cp = utf8_decode(title, &pos);
+					render_char_to_buffer(pixels, width, cell_height, title_x, 0, cp, title_fg);
+					title_x += cell_width;
+					rendered++;
+				}
+			}
 		}
 	}
 	
 	/* End corner */
-	render_char_to_buffer(pixels, width, cell_height, width - cell_width * 2, 0, h_line, frame_fg_color);
-	render_char_to_buffer(pixels, width, cell_height, width - cell_width, 0, tr_char, frame_fg_color);
+	render_char_to_buffer(pixels, width, cell_height, width - cell_width * 2, 0, h_line, cfg_frame_fg_color);
+	render_char_to_buffer(pixels, width, cell_height, width - cell_width, 0, tr_char, cfg_frame_fg_color);
 
 	if (!c->frame_top)
 		c->frame_top = wlr_scene_buffer_create(c->scene, NULL);
@@ -5080,12 +6001,12 @@ updateframe(Client *c)
 		for (i = 0; i < width * cell_height; i++)
 			pixels[i] = bg_color;
 
-		render_char_to_buffer(pixels, width, cell_height, 0, 0, bl_char, frame_fg_color);
+		render_char_to_buffer(pixels, width, cell_height, 0, 0, bl_char, cfg_frame_fg_color);
 		
 		for (x = cell_width; x < width - cell_width; x += cell_width)
-			render_char_to_buffer(pixels, width, cell_height, x, 0, h_line, frame_fg_color);
+			render_char_to_buffer(pixels, width, cell_height, x, 0, h_line, cfg_frame_fg_color);
 		
-		render_char_to_buffer(pixels, width, cell_height, width - cell_width, 0, br_char, frame_fg_color);
+		render_char_to_buffer(pixels, width, cell_height, width - cell_width, 0, br_char, cfg_frame_fg_color);
 
 		if (!c->frame_bottom)
 			c->frame_bottom = wlr_scene_buffer_create(c->scene, NULL);
@@ -5112,7 +6033,7 @@ updateframe(Client *c)
 				pixels[i] = bg_color;
 
 			for (i = 0; i < rows; i++)
-				render_char_to_buffer(pixels, cell_width, side_height, 0, i * cell_height, v_line, frame_fg_color);
+				render_char_to_buffer(pixels, cell_width, side_height, 0, i * cell_height, v_line, cfg_frame_fg_color);
 
 			if (!c->frame_left)
 				c->frame_left = wlr_scene_buffer_create(c->scene, NULL);
@@ -5140,7 +6061,7 @@ updateframe(Client *c)
 				pixels[i] = bg_color;
 
 			for (i = 0; i < rows; i++)
-				render_char_to_buffer(pixels, cell_width, side_height, 0, i * cell_height, v_line, frame_fg_color);
+				render_char_to_buffer(pixels, cell_width, side_height, 0, i * cell_height, v_line, cfg_frame_fg_color);
 
 			if (!c->frame_right)
 				c->frame_right = wlr_scene_buffer_create(c->scene, NULL);
@@ -5432,7 +6353,7 @@ updatemons(struct wl_listener *listener, void *data)
 	wlr_scene_node_set_position(&root_bg->node, sgeom.x, sgeom.y);
 	wlr_scene_rect_set_size(root_bg, sgeom.width, sgeom.height);
 
-	/* Make sure the clients are hidden when dwl is locked */
+	/* Make sure the clients are hidden when tbwm is locked */
 	wlr_scene_node_set_position(&locked_bg->node, sgeom.x, sgeom.y);
 	wlr_scene_rect_set_size(locked_bg, sgeom.width, sgeom.height);
 
@@ -5514,6 +6435,9 @@ updatemons(struct wl_listener *listener, void *data)
 	 * wl_pointer.motion event for the clients, it's only the image what it's
 	 * at the wrong position after all. */
 	wlr_cursor_move(cursor, NULL, 0, 0);
+
+	/* Update REPL display now that we have a monitor */
+	updaterepl();
 
 	wlr_output_manager_v1_set_configuration(output_mgr, config);
 }
@@ -5756,7 +6680,7 @@ xwaylandready(struct wl_listener *listener, void *data)
 	/* assign the one and only seat */
 	wlr_xwayland_set_seat(xwayland, seat);
 
-	/* Set the default XWayland cursor to match the rest of dwl. */
+	/* Set the default XWayland cursor to match the rest of tbwm. */
 	if ((xcursor = wlr_xcursor_manager_get_xcursor(cursor_mgr, "default", 1)))
 		wlr_xwayland_set_cursor(xwayland,
 				xcursor->images[0]->buffer, xcursor->images[0]->width * 4,
@@ -5777,7 +6701,7 @@ main(int argc, char *argv[])
 		else if (c == 'd')
 			log_level = WLR_DEBUG;
 		else if (c == 'v')
-			die("dwl " VERSION);
+			die("tbwm " VERSION);
 		else
 			goto usage;
 	}

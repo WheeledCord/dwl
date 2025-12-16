@@ -1,4 +1,4 @@
-/* Taken from https://github.com/djpohly/dwl/issues/466 */
+/* Taken from https://github.com/djpohly/tbwm/issues/466 */
 #define COLOR(hex)    { ((hex >> 24) & 0xFF) / 255.0f, \
                         ((hex >> 16) & 0xFF) / 255.0f, \
                         ((hex >> 8) & 0xFF) / 255.0f, \

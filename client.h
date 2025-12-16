@@ -1,5 +1,5 @@
 /*
- * Attempt to consolidate unavoidable suck into one file, away from dwl.c.  This
+ * Attempt to consolidate unavoidable suck into one file, away from tbwm.c.  This
  * file is not meant to be pretty.  We use a .h file with static inline
  * functions instead of a separate .c module, or function pointers like sway, so
  * that they will simply compile out if the chosen #defines leave them unused.
