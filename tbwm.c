@@ -15,6 +15,9 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/eventfd.h>
+#include <errno.h>
+#include <stdarg.h>
 #include <wayland-server-core.h>
 #include <wlr/backend.h>
 #include <wlr/backend/libinput.h>
@@ -330,6 +333,24 @@ static Client *focustop(Monitor *m);
 static void fullscreennotify(struct wl_listener *listener, void *data);
 static void gpureset(struct wl_listener *listener, void *data);
 static void handlesig(int signo);
+static int signal_fd_cb(int fd, uint32_t mask, void *data);
+static void file_debug_log(const char *fmt, ...);
+
+/* Simple file logger for debugging when running in a graphical session */
+static void
+file_debug_log(const char *fmt, ...)
+{
+	FILE *f = fopen("/tmp/tbwm-debug.log", "a");
+	if (!f)
+		return;
+	va_list ap;
+	va_start(ap, fmt);
+	vfprintf(f, fmt, ap);
+	va_end(ap);
+	fflush(f);
+	fclose(f);
+}
+
 static void incnmaster(const Arg *arg);
 static void inputdevice(struct wl_listener *listener, void *data);
 static int keybinding(uint32_t mods, xkb_keysym_t sym);
@@ -383,6 +404,7 @@ static void render_char_to_buffer(uint32_t *pixels, int buf_w, int buf_h, int x,
                       unsigned long charcode, uint32_t color);
 static void render_char_clipped(uint32_t *pixels, int buf_w, int buf_h, int x, int y,
                     unsigned long charcode, uint32_t color, int clip_left, int clip_right);
+static unsigned long utf8_decode(const char *s, int *pos);
 static void updatebar(Monitor *m);
 static void updatebars(void);
 static int bartimer(void *data);
@@ -432,6 +454,12 @@ static int launcher_input_len = 0;
 static int launcher_selection = 0;
 static char **app_cache = NULL;
 static int app_cache_count = 0;
+
+/* Signal handling helpers: set by signal handler and used from main loop */
+static volatile sig_atomic_t exit_requested = 0;
+static int signal_fd = -1;
+static struct wl_event_source *signal_fd_source = NULL;
+
 static struct wl_event_source *bar_timer = NULL;
 static uint32_t title_scroll_offset = 0; /* pixel offset for smooth title scrolling */
 static int title_scroll_mode = 1;        /* 0 = truncate with ..., 1 = scroll */
@@ -871,7 +899,20 @@ buttonpress(struct wl_listener *listener, void *data)
 void
 chvt(const Arg *arg)
 {
-	wlr_session_change_vt(session, arg->ui);
+	if (!session) {
+		file_debug_log("tbwm: chvt: no session available, cannot change VT to %u\n", arg->ui);
+		fflush(NULL);
+		return;
+	}
+	/* Log the request so we can see that chvt() was invoked */
+	file_debug_log("tbwm: chvt: request to change VT to %u\n", arg->ui);
+	fflush(NULL);
+	int rc = wlr_session_change_vt(session, arg->ui);
+	if (rc < 0) {
+		/* Log the error so users can diagnose permission/seat issues */
+		file_debug_log("tbwm: chvt: wlr_session_change_vt(%u) failed: %s\n", arg->ui, strerror(errno));
+		fflush(NULL);
+	}
 }
 
 void
@@ -906,6 +947,16 @@ cleanup(void)
 		waitpid(child_pid, NULL, 0);
 	}
 	wlr_xcursor_manager_destroy(cursor_mgr);
+
+	/* Remove our signal event source and close the descriptor */
+	if (signal_fd_source) {
+		wl_event_source_remove(signal_fd_source);
+		signal_fd_source = NULL;
+	}
+	if (signal_fd >= 0) {
+		close(signal_fd);
+		signal_fd = -1;
+	}
 
 	destroykeyboardgroup(&kb_group->destroy, NULL);
 
@@ -2357,11 +2408,39 @@ gpureset(struct wl_listener *listener, void *data)
 void
 handlesig(int signo)
 {
-	if (signo == SIGCHLD)
+	if (signo == SIGCHLD) {
+		/* Reap children (async-signal-safe) */
 		while (waitpid(-1, NULL, WNOHANG) > 0);
-	else if (signo == SIGINT || signo == SIGTERM)
-		quit(NULL);
+		/* Wake main loop so it can handle reaping/logging */
+		if (signal_fd >= 0) {
+			uint64_t one = 1;
+			ssize_t s = write(signal_fd, &one, sizeof(one));
+			(void)s;
+		}
+	} else if (signo == SIGINT || signo == SIGTERM) {
+		/* Mark shutdown requested and wake main loop to perform cleanup */
+		exit_requested = 1;
+		if (signal_fd >= 0) {
+			uint64_t one = 1;
+			ssize_t s = write(signal_fd, &one, sizeof(one));
+			(void)s;
+		}
+	}
 }
+
+static int
+signal_fd_cb(int fd, uint32_t mask, void *data)
+{
+	uint64_t val;
+	ssize_t r = read(fd, &val, sizeof(val));
+	if (r < 0) {
+		if (errno != EAGAIN && errno != EWOULDBLOCK)
+			fprintf(stderr, "tbwm: read(signal_fd) failed: %s\n", strerror(errno));
+	}
+	if (exit_requested)
+		quit(NULL);
+	return 1; /* continue watching */
+} 
 
 void
 incnmaster(const Arg *arg)
@@ -2587,6 +2666,31 @@ keybinding(uint32_t mods, xkb_keysym_t sym)
 	if (check_scheme_bindings(CLEANMASK(mods), sym))
 		return 1;
 
+	/*
+	 * Fallback: some keyboards or keymaps produce plain F1..F12 for Ctrl+Alt+Fx
+	 * instead of the XF86Switch_VT_* keysyms. Handle that scenario here so VT
+	 * switching works regardless of the specific keysym produced.
+	 */
+	if (CLEANMASK(mods) == (WLR_MODIFIER_CTRL|WLR_MODIFIER_ALT)) {
+		/* Prefer XF86Switch_VT_1..12 if the keymap provides them */
+		if (sym >= XKB_KEY_XF86Switch_VT_1 && sym <= XKB_KEY_XF86Switch_VT_12) {
+			int n = sym - XKB_KEY_XF86Switch_VT_1 + 1;
+			Arg a = {.ui = (unsigned int)n};
+			file_debug_log("tbwm: chvt: XF86Switch_VT_%d detected, invoking chvt()\n", n);
+			chvt(&a);
+			return 1;
+		}
+
+		/* Older / simpler keymaps may produce plain F1..F12 */
+		if (sym >= XKB_KEY_F1 && sym <= XKB_KEY_F12) {
+			int n = sym - XKB_KEY_F1 + 1;
+			Arg a = {.ui = (unsigned int)n};
+			file_debug_log("tbwm: chvt: F%d detected (no XF86 keysym), invoking chvt()\n", n);
+			chvt(&a);
+			return 1;
+		}
+	}
+
 	for (k = keys; k < END(keys); k++) {
 		if (CLEANMASK(mods) == CLEANMASK(k->mod)
 				&& sym == k->keysym && k->func) {
@@ -2617,9 +2721,33 @@ keypress(struct wl_listener *listener, void *data)
 
 	wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
 
+	/* Debug: log keys when Ctrl+Alt are held so we can see what keysym is generated */
+	if ((mods & WLR_MODIFIER_CTRL) && (mods & WLR_MODIFIER_ALT)) {
+		int k;
+		for (k = 0; k < nsyms; k++) {
+			char name[64] = {0};
+			xkb_keysym_t s = syms[k];
+			xkb_keysym_get_name(s, name, sizeof(name));
+			file_debug_log("tbwm: keypress: ctrl+alt keycode=%u sym=0x%x (%s) state=%d\n",
+				keycode, (unsigned int)s, name[0] ? name : "(unknown)", event->state);
+			fflush(NULL);
+		}
+	}
+
 	/* On _press_ if there is no active screen locker,
 	 * attempt to process a compositor keybinding. */
 	if (!locked && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+		/* Debugging: if Ctrl+Alt are held, print detected keysyms */
+		if ((mods & (WLR_MODIFIER_CTRL|WLR_MODIFIER_ALT)) == (WLR_MODIFIER_CTRL|WLR_MODIFIER_ALT)) {
+			for (i = 0; i < nsyms; i++) {
+				char symname[64] = {0};
+				xkb_keysym_get_name(syms[i], symname, sizeof(symname));
+				file_debug_log("tbwm: keypress: mods=0x%x keycode=%u sym=0x%x (%s)\n",
+					mods, keycode, (unsigned int)syms[i], symname[0] ? symname : "(no-name)");
+				fflush(NULL);
+			}
+		}
+
 		for (i = 0; i < nsyms; i++)
 			handled = keybinding(mods, syms[i]) || handled;
 	}
@@ -3578,6 +3706,15 @@ setup(void)
 	 * clients from the Unix socket, manging Wayland globals, and so on. */
 	dpy = wl_display_create();
 	event_loop = wl_display_get_event_loop(dpy);
+
+	/* Setup eventfd to safely communicate signals into the Wayland event loop */
+	signal_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+	if (signal_fd >= 0) {
+		signal_fd_source = wl_event_loop_add_fd(event_loop, signal_fd, WL_EVENT_READABLE, signal_fd_cb, NULL);
+	} else {
+		fprintf(stderr, "tbwm: warning: eventfd() failed: %s\n", strerror(errno));
+	}
+
 
 	/* The backend is a wlroots feature which abstracts the underlying input and
 	 * output hardware. The autocreate option will choose the most suitable
@@ -4776,16 +4913,16 @@ static const char *default_config =
 "(bind-key \"M-8\" (lambda () (view-tag 8)))\n"
 "(bind-key \"M-9\" (lambda () (view-tag 9)))\n"
 "\n"
-";; Move window to tag\n"
-"(bind-key \"M-S-1\" (lambda () (tag-window 1)))\n"
-"(bind-key \"M-S-2\" (lambda () (tag-window 2)))\n"
-"(bind-key \"M-S-3\" (lambda () (tag-window 3)))\n"
-"(bind-key \"M-S-4\" (lambda () (tag-window 4)))\n"
-"(bind-key \"M-S-5\" (lambda () (tag-window 5)))\n"
-"(bind-key \"M-S-6\" (lambda () (tag-window 6)))\n"
-"(bind-key \"M-S-7\" (lambda () (tag-window 7)))\n"
-"(bind-key \"M-S-8\" (lambda () (tag-window 8)))\n"
-"(bind-key \"M-S-9\" (lambda () (tag-window 9)))\n"
+";; Move window to tag (Shift+number gives symbols on US keyboard)\n"
+"(bind-key \"M-S-exclam\" (lambda () (tag-window 1)))\n"
+"(bind-key \"M-S-at\" (lambda () (tag-window 2)))\n"
+"(bind-key \"M-S-numbersign\" (lambda () (tag-window 3)))\n"
+"(bind-key \"M-S-dollar\" (lambda () (tag-window 4)))\n"
+"(bind-key \"M-S-percent\" (lambda () (tag-window 5)))\n"
+"(bind-key \"M-S-asciicircum\" (lambda () (tag-window 6)))\n"
+"(bind-key \"M-S-ampersand\" (lambda () (tag-window 7)))\n"
+"(bind-key \"M-S-asterisk\" (lambda () (tag-window 8)))\n"
+"(bind-key \"M-S-parenleft\" (lambda () (tag-window 9)))\n"
 "\n"
 ";; Refresh layout\n"
 "(bind-key \"M-S-r\" (lambda () (refresh)))\n"
@@ -5004,8 +5141,15 @@ buildappcache(void)
 				if (dup)
 					continue;
 				if (app_cache_count >= capacity) {
-					capacity *= 2;
-					app_cache = realloc(app_cache, capacity * sizeof(char *));
+					size_t new_capacity = capacity * 2;
+					char **tmp = realloc(app_cache, new_capacity * sizeof(char *));
+					if (!tmp) {
+						fprintf(stderr, "tbwm: warning: cannot grow app cache to %zu entries: %s\n", new_capacity, strerror(errno));
+						/* stop adding further entries to avoid inconsistent state */
+						break;
+					}
+					app_cache = tmp;
+					capacity = new_capacity;
 				}
 				app_cache[app_cache_count++] = strdup(ent->d_name);
 			}
@@ -5476,10 +5620,17 @@ updatebar(Monitor *m)
 					fg = cfg_frame_bg_color;
 				}
 
+				title_max = tab_width_cells - 2;
+				title_len = strlen(title);
+				
+				/* Calculate actual tab width for background */
+				int actual_title_chars = (title_len < title_max - 1) ? title_len : title_max - 1;
+				int actual_tab_width = (actual_title_chars + 2) * cell_width; /* +2 for brackets */
+				
 				/* Draw background for focused */
 				if (is_focused) {
 					for (py = 0; py < cell_height; py++) {
-						for (px = x; px < x + tab_width_cells * cell_width && px < width; px++) {
+						for (px = x; px < x + actual_tab_width && px < width; px++) {
 							pixels[py * width + px] = bg;
 						}
 					}
@@ -5487,13 +5638,17 @@ updatebar(Monitor *m)
 
 				render_char_to_buffer(pixels, width, cell_height, x, 0, '[', fg);
 				x += cell_width;
-
-				title_max = tab_width_cells - 2;
-				title_len = strlen(title);
 				
 				if (title_len > title_max - 1 && title_scroll_mode) {
 					/* Smooth pixel-based scrolling for top bar tabs */
-					int scroll_chars = title_len + 2; /* +2 for "  " separator */
+					/* First decode title to codepoints */
+					unsigned long title_cps[256];
+					int title_cp_count = 0, utf8_pos = 0;
+					while (title[utf8_pos] && title_cp_count < 255) {
+						title_cps[title_cp_count++] = utf8_decode(title, &utf8_pos);
+					}
+					
+					int scroll_chars = title_cp_count + 2; /* +2 for "  " separator */
 					int total_scroll_width = scroll_chars * cell_width;
 					int pixel_offset = title_scroll_offset % total_scroll_width;
 					int display_width = (title_max - 1) * cell_width;
@@ -5508,15 +5663,18 @@ updatebar(Monitor *m)
 						int draw_x = text_start_x + char_idx * cell_width - pixel_offset;
 						unsigned long cp;
 						
-						cp = (src_char < title_len) ? (unsigned char)title[src_char] : ' ';
+						cp = (src_char < title_cp_count) ? title_cps[src_char] : ' ';
 						render_char_clipped(pixels, width, cell_height, draw_x, 0, cp, fg, text_start_x, text_end_x);
 					}
 					x += display_width;
 				} else if (title_len > title_max - 1 && title_max > 3) {
 					/* Truncation mode with ellipsis */
-					for (i = 0; i < title_max - 4 && i < title_len && x < width - cell_width; i++) {
-						render_char_to_buffer(pixels, width, cell_height, x, 0, (unsigned char)title[i], fg);
+					int utf8_pos = 0, char_count = 0;
+					while (title[utf8_pos] && char_count < title_max - 4 && x < width - cell_width) {
+						unsigned long cp = utf8_decode(title, &utf8_pos);
+						render_char_to_buffer(pixels, width, cell_height, x, 0, cp, fg);
 						x += cell_width;
+						char_count++;
 					}
 					render_char_to_buffer(pixels, width, cell_height, x, 0, '.', fg);
 					x += cell_width;
@@ -5526,16 +5684,18 @@ updatebar(Monitor *m)
 					x += cell_width;
 				} else {
 					/* Title fits */
-					for (i = 0; i < title_max - 1 && i < title_len && x < width - cell_width; i++) {
-						render_char_to_buffer(pixels, width, cell_height, x, 0, (unsigned char)title[i], fg);
+					int utf8_pos = 0, char_count = 0;
+					while (title[utf8_pos] && char_count < title_max - 1 && x < width - cell_width) {
+						unsigned long cp = utf8_decode(title, &utf8_pos);
+						render_char_to_buffer(pixels, width, cell_height, x, 0, cp, fg);
 						x += cell_width;
+						char_count++;
 					}
-					x += cell_width;
 				}
 
 				render_char_to_buffer(pixels, width, cell_height, x, 0, ']', fg);
 				x += cell_width;
-				x += cell_width / 2;
+				x += cell_width / 2; /* Gap between tabs */
 			}
 		}
 
@@ -6092,6 +6252,12 @@ tag(const Arg *arg)
 	if (!sel || (arg->ui & TAGMASK) == 0)
 		return;
 
+	/* Remove from current dwindle tree before changing tags */
+	if (sel->dwindle) {
+		dwindle_remove(sel);
+		sel->dwindle = NULL;
+	}
+	
 	sel->tags = arg->ui & TAGMASK;
 	focusclient(focustop(selmon), 1);
 	arrange(selmon);
