@@ -1,103 +1,63 @@
-# TurboWM Default Keybindings
+# keybindings
 
-Quick reference for all default keybindings.
+default keys. change em in config.scm
 
-## Applications
+## apps
 
-| Keys | Action |
-|------|--------|
-| `Super + Return` | Open terminal (foot) |
-| `Super + D` | Open launcher |
-| `Super + ;` | Toggle REPL |
+- super+return - terminal (foot)
+- super+d - launcher
+- super+; - repl
 
-## Window Management
+## windows
 
-| Keys | Action |
-|------|--------|
-| `Super + Q` | Close focused window |
-| `Super + F` | Toggle fullscreen |
-| `Super + Shift + Space` | Toggle floating |
+- super+q - close window
+- super+f - fullscreen
+- super+shift+space - toggle floating
 
-## Focus (Vim Keys)
+## focus (vim)
 
-| Keys | Action |
-|------|--------|
-| `Super + H` | Focus left |
-| `Super + J` | Focus down |
-| `Super + K` | Focus up |
-| `Super + L` | Focus right |
+- super+h/j/k/l - focus left/down/up/right
 
-## Focus (Arrow Keys)
+## focus (arrows)
 
-| Keys | Action |
-|------|--------|
-| `Super + ←` | Focus left |
-| `Super + ↓` | Focus down |
-| `Super + ↑` | Focus up |
-| `Super + →` | Focus right |
+- super+arrows - focus that direction
 
-## Swap Windows (Vim Keys)
+## swap windows (vim)
 
-| Keys | Action |
-|------|--------|
-| `Super + Shift + H` | Swap left |
-| `Super + Shift + J` | Swap down |
-| `Super + Shift + K` | Swap up |
-| `Super + Shift + L` | Swap right |
+- super+shift+h/j/k/l - swap left/down/up/right
 
-## Swap Windows (Arrow Keys)
+## swap windows (arrows)
 
-| Keys | Action |
-|------|--------|
-| `Super + Shift + ←` | Swap left |
-| `Super + Shift + ↓` | Swap down |
-| `Super + Shift + ↑` | Swap up |
-| `Super + Shift + →` | Swap right |
+- super+shift+arrows - swap that direction
 
-## Tags (Virtual Desktops)
+## tags
 
-| Keys | Action |
-|------|--------|
-| `Super + 1-9` | View tag 1-9 |
-| `Super + Shift + 1-9` | Move window to tag 1-9 |
-| `Super + Ctrl + 1-9` | Toggle tag visibility |
-| `Super + Ctrl + Shift + 1-9` | Toggle window on tag |
-| `Super + 0` | View all tags |
-| `Super + Shift + 0` | Window on all tags |
+- super+1-9 - go to tag
+- super+shift+1-9 - move window to tag
+- super+0 - view all
+- super+shift+0 - window on all tags
 
-## Monitor Control
+## monitors
 
-| Keys | Action |
-|------|--------|
-| `Super + Period` | Focus next monitor |
-| `Super + Comma` | Focus previous monitor |
-| `Super + Shift + Period` | Send window to next monitor |
-| `Super + Shift + Comma` | Send window to previous monitor |
+- super+period/comma - focus next/prev monitor
+- super+shift+period/comma - send window to monitor
 
-## Layout
+## layout
 
-| Keys | Action |
-|------|--------|
-| `Super + Space` | Cycle layout |
-| `Super + [` | Decrease master width |
-| `Super + ]` | Increase master width |
-| `Super + I` | Increase master count |
-| `Super + O` | Decrease master count |
+- super+space - cycle layout
+- super+[/] - shrink/grow master
+- super+i/o - more/fewer masters
 
-## System
+## system
 
-| Keys | Action |
-|------|--------|
-| `Super + Shift + C` | Reload config |
-| `Super + Shift + E` | Quit TurboWM |
-| `Ctrl + Alt + F1-F12` | Switch to TTY |
+- super+shift+c - reload config
+- super+shift+e - quit
+- ctrl+alt+f1-f12 - switch tty
 
-## Mouse
+## mouse
 
-| Mouse | Action |
-|-------|--------|
-| `Super + Left Click` | Move window |
-| `Super + Right Click` | Resize window |
+- super+left click - move window
+- super+right click - resize window
 
 ---
 
