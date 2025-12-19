@@ -335,6 +335,11 @@ static void gpureset(struct wl_listener *listener, void *data);
 static void handlesig(int signo);
 static int signal_fd_cb(int fd, uint32_t mask, void *data);
 static void file_debug_log(const char *fmt, ...);
+#define TBWM_LOG_DEBUG 0
+#define TBWM_LOG_INFO 1
+#define TBWM_LOG_WARN 2
+#define TBWM_LOG_ERROR 3
+static void tbwm_log(int level, const char *fmt, ...);
 
 /* Simple file logger for debugging when running in a graphical session */
 static void
@@ -383,6 +388,7 @@ static void requeststartdrag(struct wl_listener *listener, void *data);
 static void requestmonstate(struct wl_listener *listener, void *data);
 static void resize(Client *c, struct wlr_box geo, int interact);
 static void run(char *startup_cmd);
+static void run_startup_commands(void);
 static void setcursor(struct wl_listener *listener, void *data);
 static void setcursorshape(struct wl_listener *listener, void *data);
 static void setfloating(Client *c, int floating);
@@ -413,6 +419,7 @@ static void togglelauncher(const Arg *arg);
 static void togglerepl(const Arg *arg);
 static void updaterepl(void);
 static void repl_add_line(const char *line);
+void tbwm_log(int level, const char *fmt, ...);
 static void repl_eval(void);
 static int replkey(xkb_keysym_t sym);
 static void updateframe(Client *c);
@@ -479,6 +486,13 @@ static int repl_history_count = 0;       /* number of lines in history */
 static int repl_scroll_offset = 0;       /* scroll position (0 = bottom) */
 static struct wlr_scene_buffer *repl_buffer = NULL;  /* rendered REPL output */
 
+/* REPL log config: only lines with severity >= this appear in REPL */
+static int cfg_repl_log_level = TBWM_LOG_ERROR; /* default: only errors */
+/* Pipe to capture stderr and forward to REPL */
+static int repl_stderr_fd = -1; /* read end */
+static int repl_stderr_wfd = -1; /* write end */
+static struct wl_event_source *repl_stderr_source = NULL;
+
 /* Dwindle layout nodes */
 #define MAX_DWINDLE_NODES 256
 static DwindleNode dwindle_nodes[MAX_DWINDLE_NODES];
@@ -495,18 +509,37 @@ static int cfg_sloppyfocus = 1;
 static int cfg_bypass_surface_visibility = 0;
 static unsigned int cfg_borderpx = 1;
 static int cfg_tagcount = 9;
+static int cfg_show_time = 1;          /* Show time in status bar */
+static int cfg_show_date = 1;          /* Show date in status bar */
+static char cfg_status_text[256] = ""; /* Custom status text (overrides date/time if set) */
 
-/* Colors (ARGB format: 0xAARRGGBB) */
+/* Colors (#RRGGBB format, alpha added at render time)
+ * cfg_bg_color          = root/REPL background (black)
+ * cfg_bg_text_color     = text on background/REPL (grey)
+ * cfg_bar_color         = status bar background (blue)
+ * cfg_bar_text_color    = status bar text (grey)
+ * cfg_border_color      = window border/frame highlight (blue)
+ * cfg_border_line_color = box-drawing characters (grey)
+ */
+static uint32_t cfg_bg_color = 0x000000;           /* black background */
+static uint32_t cfg_bg_text_color = 0xaaaaaa;      /* grey text */
+static uint32_t cfg_bar_color = 0x0000aa;          /* blue bar background */
+static uint32_t cfg_bar_text_color = 0xaaaaaa;     /* grey bar text */
+static uint32_t cfg_border_color = 0x0000aa;       /* blue highlight */
+static uint32_t cfg_border_line_color = 0xaaaaaa;  /* grey box-drawing */
+
+/* Startup commands */
+#define MAX_STARTUP_CMDS 32
+static char *cfg_startup_cmds[MAX_STARTUP_CMDS];
+static int cfg_startup_cmd_count = 0;
+static int cfg_startup_ran = 0;
+
+/* Legacy wlroots border colors (not really used with custom frames) */
 static float cfg_rootcolor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-static float cfg_bordercolor[4] = {0.267f, 0.267f, 0.267f, 1.0f};  /* #444444 */
-static float cfg_focuscolor[4] = {0.0f, 0.333f, 0.467f, 1.0f};     /* #005577 */
-static float cfg_urgentcolor[4] = {1.0f, 0.0f, 0.0f, 1.0f};        /* #ff0000 */
+static float cfg_bordercolor[4] = {0.267f, 0.267f, 0.267f, 1.0f};
+static float cfg_focuscolor[4] = {0.0f, 0.333f, 0.467f, 1.0f};
+static float cfg_urgentcolor[4] = {1.0f, 0.0f, 0.0f, 1.0f};
 static float cfg_fullscreen_bg[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-
-/* Frame colors (ARGB format for rendering) */
-static uint32_t cfg_frame_bg_color = 0xFF0000aa;     /* blue background (focused) */
-static uint32_t cfg_frame_bg_inactive = 0xFF000000;  /* black background (inactive) */
-static uint32_t cfg_frame_fg_color = 0xFFaaaaaa;     /* gray text/lines */
 
 /* Grid font settings */
 static char cfg_font_path[512] = "/home/fionn/.local/share/fonts/PxPlus_IBM_VGA_8x16.ttf";
@@ -546,15 +579,38 @@ typedef struct {
 static RuntimeRule cfg_rules[MAX_RULES];
 static int cfg_rule_count = 0;
 
-/* Mouse bindings - dynamic array */
-#define MAX_MOUSE_BINDINGS 32
+/* Mouse bindings (dynamic) */
 typedef struct {
 	uint32_t mod;
 	uint32_t button;
 	s7_pointer callback;
+	s7_int gc_loc;
 } MouseBinding;
-static MouseBinding cfg_mouse_bindings[MAX_MOUSE_BINDINGS];
+static MouseBinding *cfg_mouse_bindings = NULL;
 static int cfg_mouse_binding_count = 0;
+static int cfg_mouse_binding_capacity = 0;
+
+static void
+ensure_mouse_bindings_capacity(int extra)
+{
+	if (cfg_mouse_binding_capacity - cfg_mouse_binding_count >= extra)
+		return;
+	int newcap = cfg_mouse_binding_capacity ? cfg_mouse_binding_capacity * 2 : 8;
+	while (newcap - cfg_mouse_binding_count < extra)
+		newcap *= 2;
+	MouseBinding *tmp = realloc(cfg_mouse_bindings, newcap * sizeof(MouseBinding));
+	if (!tmp) {
+		tbwm_log(TBWM_LOG_ERROR, "tbwm: out of memory growing mouse bindings\n");
+		return;
+	}
+	cfg_mouse_bindings = tmp;
+	for (int i = cfg_mouse_binding_capacity; i < newcap; ++i) {
+		cfg_mouse_bindings[i].callback = s7_nil(sc);
+		cfg_mouse_bindings[i].gc_loc = -1;
+	}
+	cfg_mouse_binding_capacity = newcap;
+	file_debug_log("tbwm-scm: mouse_bindings capacity grown to %d\n", cfg_mouse_binding_capacity);
+}
 
 /* Log level */
 static int cfg_log_level = WLR_ERROR;
@@ -900,18 +956,15 @@ void
 chvt(const Arg *arg)
 {
 	if (!session) {
-		file_debug_log("tbwm: chvt: no session available, cannot change VT to %u\n", arg->ui);
-		fflush(NULL);
+		tbwm_log(TBWM_LOG_ERROR, "chvt: no session available, cannot change VT to %u", arg->ui);
 		return;
 	}
-	/* Log the request so we can see that chvt() was invoked */
+	/* Log the request so we can see that chvt() was invoked (debug file only) */
 	file_debug_log("tbwm: chvt: request to change VT to %u\n", arg->ui);
-	fflush(NULL);
 	int rc = wlr_session_change_vt(session, arg->ui);
 	if (rc < 0) {
 		/* Log the error so users can diagnose permission/seat issues */
-		file_debug_log("tbwm: chvt: wlr_session_change_vt(%u) failed: %s\n", arg->ui, strerror(errno));
-		fflush(NULL);
+		tbwm_log(TBWM_LOG_ERROR, "chvt: wlr_session_change_vt(%u) failed: %s", arg->ui, strerror(errno));
 	}
 }
 
@@ -956,6 +1009,20 @@ cleanup(void)
 	if (signal_fd >= 0) {
 		close(signal_fd);
 		signal_fd = -1;
+	}
+
+	/* Remove REPL stderr capture */
+	if (repl_stderr_source) {
+		wl_event_source_remove(repl_stderr_source);
+		repl_stderr_source = NULL;
+	}
+	if (repl_stderr_fd >= 0) {
+		close(repl_stderr_fd);
+		repl_stderr_fd = -1;
+	}
+	if (repl_stderr_wfd >= 0) {
+		close(repl_stderr_wfd);
+		repl_stderr_wfd = -1;
 	}
 
 	destroykeyboardgroup(&kb_group->destroy, NULL);
@@ -1042,7 +1109,7 @@ closemon(Monitor *m)
 	 * move closed monitor's clients to the focused one */
 	Client *c;
 	int i = 0, nmons = wl_list_length(&mons);
-	fprintf(stderr, "closemon: closing monitor %s\n", m->wlr_output->name);
+	tbwm_log(TBWM_LOG_WARN, "closemon: closing monitor %s", m->wlr_output->name);
 	if (!nmons) {
 		selmon = NULL;
 	} else if (m == selmon) {
@@ -1678,7 +1745,7 @@ dwindle_alloc(void)
 {
 	DwindleNode *n;
 	if (dwindle_node_count >= MAX_DWINDLE_NODES) {
-		fprintf(stderr, "dwindle: out of nodes\n");
+		tbwm_log(TBWM_LOG_ERROR, "dwindle: out of nodes\n");
 		return NULL;
 	}
 	n = &dwindle_nodes[dwindle_node_count++];
@@ -2435,12 +2502,87 @@ signal_fd_cb(int fd, uint32_t mask, void *data)
 	ssize_t r = read(fd, &val, sizeof(val));
 	if (r < 0) {
 		if (errno != EAGAIN && errno != EWOULDBLOCK)
-			fprintf(stderr, "tbwm: read(signal_fd) failed: %s\n", strerror(errno));
+			tbwm_log(TBWM_LOG_ERROR, "tbwm: read(signal_fd) failed: %s\n", strerror(errno));
 	}
 	if (exit_requested)
 		quit(NULL);
 	return 1; /* continue watching */
-} 
+}
+
+/* Callback that reads captured stderr and forwards WARNING/ERROR lines to the REPL.
+ * We avoid calling tbwm_log() here to prevent a feedback loop into the pipe. */
+static int
+repl_stderr_cb(int fd, uint32_t mask, void *data)
+{
+	char buf[4096];
+	ssize_t r;
+	static char partial[8192];
+	static size_t partial_len = 0;
+
+	for (;;) {
+		r = read(fd, buf, sizeof(buf));
+		if (r < 0) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+				break;
+			/* Otherwise, log and stop watching */
+			file_debug_log("tbwm: repl_stderr_cb read() failed: %s\n", strerror(errno));
+			return 1;
+		}
+		if (r == 0) {
+			/* EOF - pipe closed */
+			return 1;
+		}
+
+		/* Append to partial buffer */
+		if (partial_len + (size_t)r >= sizeof(partial) - 1) {
+			/* overflow - flush what we have */
+			partial[partial_len] = '\0';
+			/* write to debug file */
+			file_debug_log("%s\n", partial);
+			/* if it looks like a WARN/ERROR, send to REPL */
+			if (strstr(partial, "ERROR") || strstr(partial, "error") || strstr(partial, "err:") || strstr(partial, "failed") || strstr(partial, "WARN") || strstr(partial, "warn"))
+				repl_add_line(partial);
+			partial_len = 0;
+		}
+
+		memcpy(partial + partial_len, buf, r);
+		partial_len += r;
+		partial[partial_len] = '\0';
+
+		/* Process full lines */
+		char *line_start = partial;
+		char *nl;
+		while ((nl = strchr(line_start, '\n')) != NULL) {
+			*nl = '\0';
+			/* Trim trailing carriage return */
+			if (nl > line_start && nl[-1] == '\r')
+				nl[-1] = '\0';
+			/* Write to debug file */
+			file_debug_log("%s\n", line_start);
+			/* Detect severity and forward to REPL if level >= cfg_repl_log_level */
+			int sev = TBWM_LOG_INFO;
+			if (strstr(line_start, "ERROR") || strstr(line_start, "error") || strstr(line_start, "err:") || strstr(line_start, "failed"))
+				sev = TBWM_LOG_ERROR;
+			else if (strstr(line_start, "WARN") || strstr(line_start, "warn"))
+				sev = TBWM_LOG_WARN;
+			if (sev >= cfg_repl_log_level)
+				repl_add_line(line_start);
+
+			/* Move to next line */
+			line_start = nl + 1;
+		}
+
+		/* Move any remaining partial to front */
+		if (line_start != partial) {
+			size_t remaining = partial + partial_len - line_start;
+			memmove(partial, line_start, remaining);
+			partial_len = remaining;
+			partial[partial_len] = '\0';
+		}
+	}
+
+	return 1; /* keep watching */
+}
 
 void
 incnmaster(const Arg *arg)
@@ -2555,10 +2697,10 @@ runlauncher(void)
 			close(fd);
 		}
 
-		fprintf(stderr, "Child env: DISPLAY=%s WAYLAND_DISPLAY=%s\n",
+		tbwm_log(TBWM_LOG_INFO, "Child env: DISPLAY=%s WAYLAND_DISPLAY=%s\n",
 			getenv("DISPLAY") ? getenv("DISPLAY") : "(none)",
 			getenv("WAYLAND_DISPLAY") ? getenv("WAYLAND_DISPLAY") : "(none)");
-		fflush(stderr);
+		fflush(NULL);
 
 		setsid();
 		execl("/bin/sh", "/bin/sh", "-c", cmd, NULL);
@@ -2662,10 +2804,6 @@ keybinding(uint32_t mods, xkb_keysym_t sym)
 	if (repl_input_active)
 		return replkey(sym);
 
-	/* Check Scheme keybindings first */
-	if (check_scheme_bindings(CLEANMASK(mods), sym))
-		return 1;
-
 	/*
 	 * Fallback: some keyboards or keymaps produce plain F1..F12 for Ctrl+Alt+Fx
 	 * instead of the XF86Switch_VT_* keysyms. Handle that scenario here so VT
@@ -2676,7 +2814,7 @@ keybinding(uint32_t mods, xkb_keysym_t sym)
 		if (sym >= XKB_KEY_XF86Switch_VT_1 && sym <= XKB_KEY_XF86Switch_VT_12) {
 			int n = sym - XKB_KEY_XF86Switch_VT_1 + 1;
 			Arg a = {.ui = (unsigned int)n};
-			file_debug_log("tbwm: chvt: XF86Switch_VT_%d detected, invoking chvt()\n", n);
+			tbwm_log(TBWM_LOG_INFO, "tbwm: chvt: XF86Switch_VT_%d detected, invoking chvt()\n", n);
 			chvt(&a);
 			return 1;
 		}
@@ -2685,8 +2823,37 @@ keybinding(uint32_t mods, xkb_keysym_t sym)
 		if (sym >= XKB_KEY_F1 && sym <= XKB_KEY_F12) {
 			int n = sym - XKB_KEY_F1 + 1;
 			Arg a = {.ui = (unsigned int)n};
-			file_debug_log("tbwm: chvt: F%d detected (no XF86 keysym), invoking chvt()\n", n);
+			tbwm_log(TBWM_LOG_INFO, "tbwm: chvt: F%d detected (no XF86 keysym), invoking chvt()\n", n);
 			chvt(&a);
+			return 1;
+		}
+	}
+
+	/* Check Scheme keybindings first */
+	if (check_scheme_bindings(CLEANMASK(mods), sym))
+		return 1;
+
+	/* Fallback: treat Win+Shift+Arrow as Swap (same as Win+Shift+h/j/k/l) if no Scheme binding exists for M-S-Arrow */
+	if ((mods & WLR_MODIFIER_SHIFT) && (mods & (WLR_MODIFIER_LOGO|WLR_MODIFIER_ALT))) {
+		if (sym == XKB_KEY_Left) {
+			file_debug_log("tbwm: fallback: M-S-Left -> swapdir\n");
+			Arg a = { .i = DirLeft };
+			swapdir(&a);
+			return 1;
+		} else if (sym == XKB_KEY_Right) {
+			file_debug_log("tbwm: fallback: M-S-Right -> swapdir\n");
+			Arg a = { .i = DirRight };
+			swapdir(&a);
+			return 1;
+		} else if (sym == XKB_KEY_Up) {
+			file_debug_log("tbwm: fallback: M-S-Up -> swapdir\n");
+			Arg a = { .i = DirUp };
+			swapdir(&a);
+			return 1;
+		} else if (sym == XKB_KEY_Down) {
+			file_debug_log("tbwm: fallback: M-S-Down -> swapdir\n");
+			Arg a = { .i = DirDown };
+			swapdir(&a);
 			return 1;
 		}
 	}
@@ -2694,6 +2861,7 @@ keybinding(uint32_t mods, xkb_keysym_t sym)
 	for (k = keys; k < END(keys); k++) {
 		if (CLEANMASK(mods) == CLEANMASK(k->mod)
 				&& sym == k->keysym && k->func) {
+			tbwm_log(TBWM_LOG_INFO, "tbwm: keybinding matched mods=0x%x sym=0x%x func=%p\n", mods, sym, (void*)k->func);
 			k->func(&k->arg);
 			return 1;
 		}
@@ -2730,6 +2898,19 @@ keypress(struct wl_listener *listener, void *data)
 			xkb_keysym_get_name(s, name, sizeof(name));
 			file_debug_log("tbwm: keypress: ctrl+alt keycode=%u sym=0x%x (%s) state=%d\n",
 				keycode, (unsigned int)s, name[0] ? name : "(unknown)", event->state);
+			fflush(NULL);
+		}
+	}
+
+	/* Debug: log keys when MODKEY (Logo or Alt) + Shift are held so we can trace M-S-Arrow bindings */
+	if ((mods & WLR_MODIFIER_SHIFT) && (mods & (WLR_MODIFIER_LOGO|WLR_MODIFIER_ALT))) {
+		int k;
+		for (k = 0; k < nsyms; k++) {
+			char name[64] = {0};
+			xkb_keysym_t s = syms[k];
+			xkb_keysym_get_name(s, name, sizeof(name));
+			file_debug_log("tbwm: keypress: mod+shift mods=0x%x keycode=%u sym=0x%x (%s) state=%d\n",
+				mods, keycode, (unsigned int)s, name[0] ? name : "(unknown)", event->state);
 			fflush(NULL);
 		}
 	}
@@ -3436,7 +3617,35 @@ run(char *startup_cmd)
 		die("startup: display_add_socket_auto");
 	if (setenv("WAYLAND_DISPLAY", socket, 1) != 0)
 		die("startup: setenv WAYLAND_DISPLAY failed");
-	fprintf(stderr, "tbwm: WAYLAND_DISPLAY=%s DISPLAY=%s\n", socket, getenv("DISPLAY") ? getenv("DISPLAY") : "(none)");
+	tbwm_log(TBWM_LOG_INFO, "tbwm: WAYLAND_DISPLAY=%s DISPLAY=%s\n", socket, getenv("DISPLAY") ? getenv("DISPLAY") : "(none)");
+
+	/* Start capturing stderr into the REPL pipe so runtime WARNING/ERROR from
+	 * libraries and our own code can be forwarded into the desktop REPL.
+	 * Create a non-blocking pipe and make the write end the process's stderr. */
+	{
+		int p[2];
+		if (pipe(p) == 0) {
+			repl_stderr_fd = p[0];
+			repl_stderr_wfd = p[1];
+			/* Make read end non-blocking */
+			int flags = fcntl(repl_stderr_fd, F_GETFL, 0);
+			if (flags >= 0)
+				fcntl(repl_stderr_fd, F_SETFL, flags | O_NONBLOCK);
+			/* Replace STDERR with write end of pipe so fprintf(stderr,..) goes there */
+			if (dup2(repl_stderr_wfd, STDERR_FILENO) < 0) {
+				/* fall back: keep stderr as-is */
+				close(repl_stderr_fd);
+				repl_stderr_fd = -1;
+				close(repl_stderr_wfd);
+				repl_stderr_wfd = -1;
+			} else {
+				/* Register event source to read from the pipe in the Wayland event loop */
+				struct wl_event_loop *ev = wl_display_get_event_loop(dpy);
+				repl_stderr_source = wl_event_loop_add_fd(ev, repl_stderr_fd,
+					WL_EVENT_READABLE, repl_stderr_cb, NULL);
+			}
+		}
+	}
 
 	/* Start the backend. This will enumerate outputs and inputs, become the DRM
 	 * master, etc */
@@ -3490,6 +3699,9 @@ run(char *startup_cmd)
 	/* Start scroll timer (33ms = ~30fps for smooth scrolling) */
 	scroll_timer = wl_event_loop_add_timer(event_loop, scrolltimer, NULL);
 	wl_event_source_timer_update(scroll_timer, 33);
+
+	/* Run on-startup commands from config */
+	run_startup_commands();
 
 	/* Run the Wayland event loop. This does not return until you exit the
 	 * compositor. Starting the backend rigged up all of the necessary event
@@ -3696,11 +3908,11 @@ setup(void)
 	/* Initialize s7 Scheme interpreter */
 	sc = s7_init();
 	if (!sc) {
-		fprintf(stderr, "tbwm: warning: failed to initialize s7 Scheme\n");
+		tbwm_log(TBWM_LOG_WARN, "tbwm: warning: failed to initialize s7 Scheme\n");
 	} else {
-		fprintf(stderr, "tbwm: s7 Scheme %s initialized\n", S7_VERSION);
+		tbwm_log(TBWM_LOG_INFO, "tbwm: s7 Scheme %s initialized\n", S7_VERSION);
 		setup_scheme();
-	}
+	} 
 
 	/* The Wayland display is managed by libwayland. It handles accepting
 	 * clients from the Unix socket, manging Wayland globals, and so on. */
@@ -3712,8 +3924,8 @@ setup(void)
 	if (signal_fd >= 0) {
 		signal_fd_source = wl_event_loop_add_fd(event_loop, signal_fd, WL_EVENT_READABLE, signal_fd_cb, NULL);
 	} else {
-		fprintf(stderr, "tbwm: warning: eventfd() failed: %s\n", strerror(errno));
-	}
+		tbwm_log(TBWM_LOG_WARN, "tbwm: warning: eventfd() failed: %s\n", strerror(errno));
+	} 
 
 
 	/* The backend is a wlroots feature which abstracts the underlying input and
@@ -3926,17 +4138,17 @@ setup(void)
 		wl_signal_add(&xwayland->events.new_surface, &new_xwayland_surface);
 
 		setenv("DISPLAY", xwayland->display_name, 1);
-		fprintf(stderr, "tbwm: XWayland started on DISPLAY=%s\n", xwayland->display_name);
+		tbwm_log(TBWM_LOG_INFO, "tbwm: XWayland started on DISPLAY=%s\n", xwayland->display_name);
 	} else {
-		fprintf(stderr, "tbwm: ERROR: failed to setup XWayland X server, continuing without it\n");
-	}
+		tbwm_log(TBWM_LOG_ERROR, "tbwm: ERROR: failed to setup XWayland X server, continuing without it\n");
+	} 
 #endif
 }
 
 void
 spawn(const Arg *arg)
 {
-	fprintf(stderr, "tbwm: spawning %s (DISPLAY=%s WAYLAND_DISPLAY=%s)\n",
+	tbwm_log(TBWM_LOG_INFO, "tbwm: spawning %s (DISPLAY=%s WAYLAND_DISPLAY=%s)\n",
 		((char **)arg->v)[0],
 		getenv("DISPLAY") ? getenv("DISPLAY") : "(none)",
 		getenv("WAYLAND_DISPLAY") ? getenv("WAYLAND_DISPLAY") : "(none)");
@@ -3986,13 +4198,13 @@ setupgrid(void)
 
 	err = FT_Init_FreeType(&ft_library);
 	if (err) {
-		fprintf(stderr, "Failed to init FreeType\n");
+		tbwm_log(TBWM_LOG_ERROR, "Failed to init FreeType");
 		return;
 	}
 
 	err = FT_New_Face(ft_library, cfg_font_path, 0, &ft_face);
 	if (err) {
-		fprintf(stderr, "Failed to load font: %s\n", cfg_font_path);
+		tbwm_log(TBWM_LOG_ERROR, "Failed to load font: %s", cfg_font_path);
 		return;
 	}
 
@@ -4004,7 +4216,8 @@ setupgrid(void)
 		cell_height = ft_face->size->metrics.height >> 6;
 	}
 
-	fprintf(stderr, "Grid: %dx%d cells (font: %s)\n", cell_width, cell_height, cfg_font_path);
+	/* Informational only: writes to debug file */
+	tbwm_log(TBWM_LOG_INFO, "Grid: %dx%d cells (font: %s)", cell_width, cell_height, cfg_font_path);
 }
 
 /* ==================== SCHEME BINDINGS ==================== */
@@ -4354,7 +4567,7 @@ static s7_pointer scm_window_count(s7_scheme *sc, s7_pointer args)
 static s7_pointer scm_log(s7_scheme *sc, s7_pointer args)
 {
 	if (s7_is_string(s7_car(args)))
-		fprintf(stderr, "tbwm-scm: %s\n", s7_string(s7_car(args)));
+		tbwm_log(TBWM_LOG_WARN, "tbwm-scm: %s\n", s7_string(s7_car(args)));
 	return s7_t(sc);
 }
 
@@ -4362,7 +4575,7 @@ static s7_pointer scm_log(s7_scheme *sc, s7_pointer args)
 static s7_pointer scm_help(s7_scheme *sc, s7_pointer args)
 {
 	repl_add_line("=== TurboWM Commands ===");
-	repl_add_line("(spawn \"cmd\")      - run a program");
+	repl_add_line("(spawn \"name\")     - run a program");
 	repl_add_line("(quit)             - exit TurboWM");
 	repl_add_line("(kill-client)      - close focused window");
 	repl_add_line("(toggle-floating)  - toggle floating mode");
@@ -4373,8 +4586,13 @@ static s7_pointer scm_help(s7_scheme *sc, s7_pointer args)
 	repl_add_line("(tag-window N)     - move window to tag N");
 	repl_add_line("(reload-config)    - reload config.scm");
 	repl_add_line("(bind-key K F)     - bind key to function");
-	repl_add_line("(set-border-width N) - set border width");
-	repl_add_line("(set-focus-color C)  - set focus color");
+	repl_add_line("=== Appearance ===");
+	repl_add_line("(set-background-color C) - highlight/bg color");
+	repl_add_line("(set-border-line-color C)- box-drawing color");
+	repl_add_line("(set-tag-count N)  - virtual desktops (1-9)");
+	repl_add_line("(set-show-time B)  - show time in bar");
+	repl_add_line("(set-show-date B)  - show date in bar");
+	repl_add_line("(set-status-text S)- custom status text");
 	repl_add_line("DIR: DIR-LEFT/RIGHT/UP/DOWN");
 	return s7_t(sc);
 }
@@ -4386,7 +4604,19 @@ static s7_pointer scm_chvt(s7_scheme *sc, s7_pointer args)
 	if (!s7_is_integer(s7_car(args)))
 		return s7_f(sc);
 	arg.ui = s7_integer(s7_car(args));
+	/* Log the scheme request (INFO level) so debug file shows it; errors are promoted to REPL */
+	tbwm_log(TBWM_LOG_INFO, "scm_chvt: request to change VT to %u\n", arg.ui);
 	chvt(&arg);
+	return s7_t(sc);
+}
+
+/* Scheme function: (set-repl-log-level n) - set REPL log threshold (0=DEBUG,1=INFO,2=WARN,3=ERROR) */
+static s7_pointer scm_set_repl_log_level(s7_scheme *sc, s7_pointer args)
+{
+	if (!s7_is_integer(s7_car(args)))
+		return s7_f(sc);
+	cfg_repl_log_level = s7_integer(s7_car(args));
+	tbwm_log(TBWM_LOG_INFO, "set-repl-log-level: set to %d\n", cfg_repl_log_level);
 	return s7_t(sc);
 }
 
@@ -4409,15 +4639,38 @@ static s7_pointer scm_set_title_scroll_speed(s7_scheme *sc, s7_pointer args)
 	return s7_t(sc);
 }
 
-/* Storage for Scheme keybindings */
-#define MAX_SCHEME_BINDINGS 128
+/* Storage for Scheme keybindings (dynamic) */
 typedef struct {
 	uint32_t mod;
 	xkb_keysym_t keysym;
 	s7_pointer callback;
+	s7_int gc_loc;
 } SchemeBinding;
-static SchemeBinding scheme_bindings[MAX_SCHEME_BINDINGS];
+static SchemeBinding *scheme_bindings = NULL;
 static int scheme_binding_count = 0;
+static int scheme_binding_capacity = 0;
+
+static void
+ensure_scheme_bindings_capacity(int extra)
+{
+	if (scheme_binding_capacity - scheme_binding_count >= extra)
+		return;
+	int newcap = scheme_binding_capacity ? scheme_binding_capacity * 2 : 16;
+	while (newcap - scheme_binding_count < extra)
+		newcap *= 2;
+	SchemeBinding *tmp = realloc(scheme_bindings, newcap * sizeof(SchemeBinding));
+	if (!tmp) {
+		tbwm_log(TBWM_LOG_ERROR, "tbwm: out of memory growing scheme bindings\n");
+		return;
+	}
+	scheme_bindings = tmp;
+	for (int i = scheme_binding_capacity; i < newcap; ++i) {
+		scheme_bindings[i].callback = s7_nil(sc);
+		scheme_bindings[i].gc_loc = -1;
+	}
+	scheme_binding_capacity = newcap;
+	file_debug_log("tbwm-scm: scheme_bindings capacity grown to %d\n", scheme_binding_capacity);
+}
 
 /* Parse modifier string like "M-S-" to modifier mask */
 static uint32_t parse_modifiers(const char *str, const char **rest)
@@ -4455,31 +4708,59 @@ static s7_pointer scm_bind_key(s7_scheme *sc, s7_pointer args)
 	mods = parse_modifiers(keystr, &keyname);
 	sym = xkb_keysym_from_name(keyname, XKB_KEYSYM_CASE_INSENSITIVE);
 	if (sym == XKB_KEY_NoSymbol) {
-		fprintf(stderr, "tbwm-scm: unknown key: %s\n", keyname);
+		tbwm_log(TBWM_LOG_ERROR, "tbwm-scm: unknown key: %s", keyname);
 		return s7_f(sc);
 	}
 
-	if (scheme_binding_count >= MAX_SCHEME_BINDINGS) {
-		fprintf(stderr, "tbwm-scm: too many keybindings\n");
-		return s7_f(sc);
+	/* If an identical binding exists, replace it (and unprotect the old one). */
+	for (int i = 0; i < scheme_binding_count; i++) {
+		if (CLEANMASK(scheme_bindings[i].mod) == CLEANMASK(mods) && scheme_bindings[i].keysym == sym) {
+			/* Replace existing binding */
+			if (scheme_bindings[i].gc_loc >= 0)
+				s7_gc_unprotect_at(sc, scheme_bindings[i].gc_loc);
+			s7_int gc_loc = s7_gc_protect(sc, callback);
+			scheme_bindings[i].callback = callback;
+			scheme_bindings[i].gc_loc = gc_loc;
+			file_debug_log("tbwm-scm: replaced binding %s (idx=%d)\n", keystr, i);
+			return s7_t(sc);
+		}
 	}
 
-	/* Protect callback from GC */
-	s7_gc_protect(sc, callback);
+	/* Ensure capacity and append new binding */
+	ensure_scheme_bindings_capacity(1);
+
+	/* Protect callback from GC - store protection location so we can unprotect on reload */
+	s7_int gc_loc = s7_gc_protect(sc, callback);
 
 	scheme_bindings[scheme_binding_count].mod = mods;
 	scheme_bindings[scheme_binding_count].keysym = sym;
 	scheme_bindings[scheme_binding_count].callback = callback;
+	scheme_bindings[scheme_binding_count].gc_loc = gc_loc;
 	scheme_binding_count++;
 
-	fprintf(stderr, "tbwm-scm: bound %s (mod=0x%x, sym=0x%x)\n", keystr, mods, sym);
+	/* Debug-only: do not spam the REPL with routine bindings */
+	file_debug_log("tbwm-scm: bound %s (mod=0x%x, sym=0x%x)\n", keystr, mods, sym);
 	return s7_t(sc);
+}
+
+/* Internal: unprotect and remove all Scheme keybindings */
+static void
+unbind_all_scheme_bindings(void)
+{
+	int i;
+	for (i = 0; i < scheme_binding_count; i++) {
+		if (scheme_bindings[i].gc_loc >= 0)
+			s7_gc_unprotect_at(sc, scheme_bindings[i].gc_loc);
+		scheme_bindings[i].callback = s7_nil(sc);
+		scheme_bindings[i].gc_loc = -1;
+	}
+	scheme_binding_count = 0;
 }
 
 /* Scheme function: (unbind-all) - remove all Scheme keybindings */
 static s7_pointer scm_unbind_all(s7_scheme *sc, s7_pointer args)
 {
-	scheme_binding_count = 0;
+	unbind_all_scheme_bindings();
 	return s7_t(sc);
 }
 
@@ -4488,13 +4769,31 @@ int check_scheme_bindings(uint32_t mods, xkb_keysym_t sym)
 {
 	int i;
 	xkb_keysym_t sym_lower = xkb_keysym_to_lower(sym);
+	char symname[64] = {0};
+	xkb_keysym_get_name(sym, symname, sizeof(symname));
+	file_debug_log("tbwm: check_scheme_bindings: checking %d bindings for mods=0x%x sym=0x%x (%s)\n",
+				scheme_binding_count, mods, sym, symname[0] ? symname : "(no-name)");
+	int best_idx = -1;
+	int best_spec = -1; /* number of modifier bits in binding (higher == more specific) */
 	for (i = 0; i < scheme_binding_count; i++) {
 		xkb_keysym_t bound_lower = xkb_keysym_to_lower(scheme_bindings[i].keysym);
-		if (CLEANMASK(scheme_bindings[i].mod) == CLEANMASK(mods) && 
+		char boundname[64] = {0};
+		xkb_keysym_get_name(scheme_bindings[i].keysym, boundname, sizeof(boundname));
+		file_debug_log("tbwm: scheme idx=%d stored mod=0x%x sym=0x%x (%s)\n", i, scheme_bindings[i].mod, scheme_bindings[i].keysym, boundname[0] ? boundname : "(no-name)");
+		/* Collect best (most-specific) matching binding so that M-S-Left wins over M-Left when both exist. */
+		if ((CLEANMASK(mods) & CLEANMASK(scheme_bindings[i].mod)) == CLEANMASK(scheme_bindings[i].mod) && 
 		    (scheme_bindings[i].keysym == sym || bound_lower == sym_lower)) {
-			s7_call(sc, scheme_bindings[i].callback, s7_nil(sc));
-			return 1;
+			int spec = __builtin_popcount(CLEANMASK(scheme_bindings[i].mod));
+			if (spec > best_spec) {
+				best_spec = spec;
+				best_idx = i;
+			}
 		}
+	}
+	if (best_idx >= 0) {
+		tbwm_log(TBWM_LOG_INFO, "tbwm: scheme binding matched (idx=%d) mods=0x%x sym=0x%x (best_spec=%d)\n", best_idx, mods, sym, best_spec);
+		s7_call(sc, scheme_bindings[best_idx].callback, s7_nil(sc));
+		return 1;
 	}
 	return 0;
 }
@@ -4516,24 +4815,18 @@ static void parse_color(const char *str, float *out) {
 	out[3] = a / 255.0f;
 }
 
-/* Helper: parse hex color to uint32_t ARGB */
-static uint32_t parse_color_argb(const char *str) {
-	unsigned int r = 0, g = 0, b = 0, a = 255;
+/* Helper: parse hex color #RRGGBB to uint32_t (no alpha) */
+static uint32_t parse_color_rgb(const char *str) {
+	unsigned int r = 0, g = 0, b = 0;
 	if (str[0] == '#') str++;
-	if (strlen(str) == 8) {
-		sscanf(str, "%02x%02x%02x%02x", &a, &r, &g, &b);
-	} else if (strlen(str) == 6) {
+	if (strlen(str) >= 6) {
 		sscanf(str, "%02x%02x%02x", &r, &g, &b);
 	}
-	return (a << 24) | (r << 16) | (g << 8) | b;
+	return (r << 16) | (g << 8) | b;
 }
 
-/* Scheme: (set-border-width n) */
-static s7_pointer scm_set_border_width(s7_scheme *sc, s7_pointer args) {
-	if (!s7_is_integer(s7_car(args))) return s7_f(sc);
-	cfg_borderpx = s7_integer(s7_car(args));
-	return s7_t(sc);
-}
+/* Helper: get ARGB from RGB (add full alpha) */
+#define RGB_TO_ARGB(rgb) (0xFF000000 | (rgb))
 
 /* Scheme: (set-sloppy-focus b) */
 static s7_pointer scm_set_sloppy_focus(s7_scheme *sc, s7_pointer args) {
@@ -4541,53 +4834,142 @@ static s7_pointer scm_set_sloppy_focus(s7_scheme *sc, s7_pointer args) {
 	return s7_t(sc);
 }
 
-/* Scheme: (set-border-color "#RRGGBB") */
+/* ========== COLOR CONFIG API ========== */
+
+/* Scheme: (set-bg-color "#RRGGBB") - root/REPL background */
+static s7_pointer scm_set_bg_color(s7_scheme *sc, s7_pointer args) {
+	if (!s7_is_string(s7_car(args))) return s7_f(sc);
+	cfg_bg_color = parse_color_rgb(s7_string(s7_car(args)));
+	/* Update root background if it exists */
+	if (root_bg) {
+		float c[4];
+		c[0] = ((cfg_bg_color >> 16) & 0xFF) / 255.0f;
+		c[1] = ((cfg_bg_color >> 8) & 0xFF) / 255.0f;
+		c[2] = (cfg_bg_color & 0xFF) / 255.0f;
+		c[3] = 1.0f;
+		wlr_scene_rect_set_color(root_bg, c);
+	}
+	updatebars();
+	return s7_t(sc);
+}
+
+/* Scheme: (set-bg-text-color "#RRGGBB") - text on background/REPL */
+static s7_pointer scm_set_bg_text_color(s7_scheme *sc, s7_pointer args) {
+	if (!s7_is_string(s7_car(args))) return s7_f(sc);
+	cfg_bg_text_color = parse_color_rgb(s7_string(s7_car(args)));
+	updatebars();
+	return s7_t(sc);
+}
+
+/* Scheme: (set-border-color "#RRGGBB") - border highlight (blue) */
 static s7_pointer scm_set_border_color(s7_scheme *sc, s7_pointer args) {
 	if (!s7_is_string(s7_car(args))) return s7_f(sc);
-	parse_color(s7_string(s7_car(args)), cfg_bordercolor);
-	return s7_t(sc);
-}
-
-/* Scheme: (set-focus-color "#RRGGBB") */
-static s7_pointer scm_set_focus_color(s7_scheme *sc, s7_pointer args) {
-	if (!s7_is_string(s7_car(args))) return s7_f(sc);
-	parse_color(s7_string(s7_car(args)), cfg_focuscolor);
-	return s7_t(sc);
-}
-
-/* Scheme: (set-urgent-color "#RRGGBB") */
-static s7_pointer scm_set_urgent_color(s7_scheme *sc, s7_pointer args) {
-	if (!s7_is_string(s7_car(args))) return s7_f(sc);
-	parse_color(s7_string(s7_car(args)), cfg_urgentcolor);
-	return s7_t(sc);
-}
-
-/* Scheme: (set-root-color "#RRGGBB") */
-static s7_pointer scm_set_root_color(s7_scheme *sc, s7_pointer args) {
-	if (!s7_is_string(s7_car(args))) return s7_f(sc);
-	parse_color(s7_string(s7_car(args)), cfg_rootcolor);
-	if (root_bg)
-		wlr_scene_rect_set_color(root_bg, cfg_rootcolor);
-	return s7_t(sc);
-}
-
-/* Scheme: (set-frame-bg-color "#AARRGGBB") */
-static s7_pointer scm_set_frame_bg_color(s7_scheme *sc, s7_pointer args) {
-	if (!s7_is_string(s7_car(args))) return s7_f(sc);
-	cfg_frame_bg_color = parse_color_argb(s7_string(s7_car(args)));
+	cfg_border_color = parse_color_rgb(s7_string(s7_car(args)));
 	updateframes();
 	updatebars();
 	return s7_t(sc);
 }
 
-/* Scheme: (set-frame-fg-color "#AARRGGBB") */
-static s7_pointer scm_set_frame_fg_color(s7_scheme *sc, s7_pointer args) {
+/* Scheme: (set-border-line-color "#RRGGBB") - box drawing chars (grey) */
+static s7_pointer scm_set_border_line_color(s7_scheme *sc, s7_pointer args) {
 	if (!s7_is_string(s7_car(args))) return s7_f(sc);
-	cfg_frame_fg_color = parse_color_argb(s7_string(s7_car(args)));
+	cfg_border_line_color = parse_color_rgb(s7_string(s7_car(args)));
 	updateframes();
 	updatebars();
 	return s7_t(sc);
 }
+
+/* Scheme: (set-bar-color "#RRGGBB") - status bar background */
+static s7_pointer scm_set_bar_color(s7_scheme *sc, s7_pointer args) {
+	if (!s7_is_string(s7_car(args))) return s7_f(sc);
+	cfg_bar_color = parse_color_rgb(s7_string(s7_car(args)));
+	updatebars();
+	return s7_t(sc);
+}
+
+/* Scheme: (set-bar-text-color "#RRGGBB") - status bar text */
+static s7_pointer scm_set_bar_text_color(s7_scheme *sc, s7_pointer args) {
+	if (!s7_is_string(s7_car(args))) return s7_f(sc);
+	cfg_bar_text_color = parse_color_rgb(s7_string(s7_car(args)));
+	updatebars();
+	return s7_t(sc);
+}
+
+/* ========== END COLOR CONFIG API ========== */
+
+/* Scheme: (set-tag-count n) - number of virtual desktops (1-9) */
+static s7_pointer scm_set_tag_count(s7_scheme *sc, s7_pointer args) {
+	int n;
+	if (!s7_is_integer(s7_car(args))) return s7_f(sc);
+	n = s7_integer(s7_car(args));
+	if (n < 1) n = 1;
+	if (n > 9) n = 9;
+	cfg_tagcount = n;
+	updatebars();
+	return s7_t(sc);
+}
+
+/* Scheme: (set-show-time b) - show/hide time in status bar */
+static s7_pointer scm_set_show_time(s7_scheme *sc, s7_pointer args) {
+	cfg_show_time = s7_boolean(sc, s7_car(args)) ? 1 : 0;
+	updatebars();
+	return s7_t(sc);
+}
+
+/* Scheme: (set-show-date b) - show/hide date in status bar */
+static s7_pointer scm_set_show_date(s7_scheme *sc, s7_pointer args) {
+	cfg_show_date = s7_boolean(sc, s7_car(args)) ? 1 : 0;
+	updatebars();
+	return s7_t(sc);
+}
+
+/* Scheme: (set-status-text "text") - custom status text (replaces date/time if non-empty) */
+static s7_pointer scm_set_status_text(s7_scheme *sc, s7_pointer args) {
+	if (!s7_is_string(s7_car(args))) return s7_f(sc);
+	strncpy(cfg_status_text, s7_string(s7_car(args)), sizeof(cfg_status_text) - 1);
+	cfg_status_text[sizeof(cfg_status_text) - 1] = '\0';
+	updatebars();
+	return s7_t(sc);
+}
+
+/* Scheme: (on-startup cmd1 cmd2 ...) - register commands to run on startup */
+static s7_pointer scm_on_startup(s7_scheme *sc, s7_pointer args) {
+	s7_pointer arg;
+	/* Clear existing startup commands */
+	for (int i = 0; i < cfg_startup_cmd_count; i++) {
+		free(cfg_startup_cmds[i]);
+		cfg_startup_cmds[i] = NULL;
+	}
+	cfg_startup_cmd_count = 0;
+	
+	/* Collect all string arguments */
+	for (arg = args; s7_is_pair(arg) && cfg_startup_cmd_count < MAX_STARTUP_CMDS; arg = s7_cdr(arg)) {
+		if (s7_is_string(s7_car(arg))) {
+			cfg_startup_cmds[cfg_startup_cmd_count] = strdup(s7_string(s7_car(arg)));
+			cfg_startup_cmd_count++;
+		}
+	}
+	tbwm_log(TBWM_LOG_INFO, "tbwm: on-startup: registered %d commands\n", cfg_startup_cmd_count);
+	return s7_t(sc);
+}
+
+/* Run startup commands (called once after compositor is ready) */
+static void run_startup_commands(void) {
+	int i;
+	if (cfg_startup_ran)
+		return;
+	cfg_startup_ran = 1;
+	
+	for (i = 0; i < cfg_startup_cmd_count; i++) {
+		if (cfg_startup_cmds[i]) {
+			tbwm_log(TBWM_LOG_INFO, "tbwm: on-startup: spawning %s\n", cfg_startup_cmds[i]);
+			Arg a = { .v = (const char*[]){ "/bin/sh", "-c", cfg_startup_cmds[i], NULL } };
+			spawn(&a);
+		}
+	}
+}
+
+/* ========== END NEW CONFIG API ========== */
 
 /* Scheme: (set-font path size) */
 static s7_pointer scm_set_font(s7_scheme *sc, s7_pointer args) {
@@ -4607,7 +4989,7 @@ static s7_pointer scm_set_font(s7_scheme *sc, s7_pointer args) {
 			cell_width = ft_face->glyph->advance.x >> 6;
 			cell_height = ft_face->size->metrics.height >> 6;
 		}
-		fprintf(stderr, "tbwm: font changed to %s %d (%dx%d cells)\n", cfg_font_path, cfg_font_size, cell_width, cell_height);
+		tbwm_log(TBWM_LOG_INFO, "tbwm: font changed to %s %d (%dx%d cells)\n", cfg_font_path, cfg_font_size, cell_width, cell_height);
 		updateframes();
 		updatebars();
 	}
@@ -4651,7 +5033,7 @@ static s7_pointer scm_add_rule(s7_scheme *sc, s7_pointer args) {
 	int tags, floating, monitor;
 	
 	if (cfg_rule_count >= MAX_RULES) {
-		fprintf(stderr, "tbwm-scm: too many rules\n");
+		tbwm_log(TBWM_LOG_WARN, "tbwm-scm: too many rules\n");
 		return s7_f(sc);
 	}
 	
@@ -4705,27 +5087,52 @@ static s7_pointer scm_bind_mouse(s7_scheme *sc, s7_pointer args) {
 	else if (strcmp(rest, "button3") == 0 || strcmp(rest, "BTN_RIGHT") == 0)
 		button = BTN_RIGHT;
 	else {
-		fprintf(stderr, "tbwm-scm: unknown button: %s\n", rest);
+		tbwm_log(TBWM_LOG_WARN, "tbwm-scm: unknown button: %s\n", rest);
 		return s7_f(sc);
 	}
 	
-	if (cfg_mouse_binding_count >= MAX_MOUSE_BINDINGS) {
-		fprintf(stderr, "tbwm-scm: too many mouse bindings\n");
-		return s7_f(sc);
+	/* Replace existing mouse binding if duplicate (mod+button) */
+	for (int i = 0; i < cfg_mouse_binding_count; i++) {
+		if (CLEANMASK(cfg_mouse_bindings[i].mod) == CLEANMASK(mods) && cfg_mouse_bindings[i].button == button) {
+			if (cfg_mouse_bindings[i].gc_loc >= 0)
+				s7_gc_unprotect_at(sc, cfg_mouse_bindings[i].gc_loc);
+			s7_int gc_loc = s7_gc_protect(sc, callback);
+			cfg_mouse_bindings[i].callback = callback;
+			cfg_mouse_bindings[i].gc_loc = gc_loc;
+			file_debug_log("tbwm-scm: replaced mouse binding %s (idx=%d)\n", spec, i);
+			return s7_t(sc);
+		}
 	}
-	
-	s7_gc_protect(sc, callback);
+
+	/* Ensure capacity and append new mouse binding */
+	ensure_mouse_bindings_capacity(1);
+	s7_int gc_loc = s7_gc_protect(sc, callback);
 	cfg_mouse_bindings[cfg_mouse_binding_count].mod = mods;
 	cfg_mouse_bindings[cfg_mouse_binding_count].button = button;
 	cfg_mouse_bindings[cfg_mouse_binding_count].callback = callback;
+	cfg_mouse_bindings[cfg_mouse_binding_count].gc_loc = gc_loc;
 	cfg_mouse_binding_count++;
-	
+	file_debug_log("tbwm-scm: bound mouse %s (mod=0x%x, btn=%u)\n", spec, mods, button);
 	return s7_t(sc);
+}
+
+/* Internal: unprotect and clear mouse bindings */
+static void
+clear_mouse_bindings_internal(void)
+{
+	int i;
+	for (i = 0; i < cfg_mouse_binding_count; i++) {
+		if (cfg_mouse_bindings[i].gc_loc >= 0)
+			s7_gc_unprotect_at(sc, cfg_mouse_bindings[i].gc_loc);
+		cfg_mouse_bindings[i].callback = s7_nil(sc);
+		cfg_mouse_bindings[i].gc_loc = -1;
+	}
+	cfg_mouse_binding_count = 0;
 }
 
 /* Scheme: (clear-mouse-bindings) */
 static s7_pointer scm_clear_mouse_bindings(s7_scheme *sc, s7_pointer args) {
-	cfg_mouse_binding_count = 0;
+	clear_mouse_bindings_internal();
 	return s7_t(sc);
 }
 
@@ -4747,6 +5154,7 @@ setup_scheme(void)
 	s7_define_function(sc, "refresh", scm_refresh, 0, 0, false, "(refresh) refresh layout");
 	s7_define_function(sc, "toggle-launcher", scm_toggle_launcher, 0, 0, false, "(toggle-launcher) open/close launcher");
 	s7_define_function(sc, "toggle-repl", scm_toggle_repl, 0, 0, false, "(toggle-repl) open/close Scheme REPL");
+	s7_define_function(sc, "set-repl-log-level", scm_set_repl_log_level, 1, 0, false, "(set-repl-log-level n) set REPL log threshold (0=DEBUG,1=INFO,2=WARN,3=ERROR)");
 	s7_define_function(sc, "move-window", scm_move_window, 0, 0, false, "(move-window) start moving focused window with mouse");
 	s7_define_function(sc, "resize-window", scm_resize_window, 0, 0, false, "(resize-window) start resizing focused window with mouse");
 	s7_define_function(sc, "focus-monitor", scm_focus_monitor, 1, 0, false, "(focus-monitor dir) focus monitor in direction");
@@ -4783,15 +5191,21 @@ setup_scheme(void)
 	s7_define_function(sc, "set-title-scroll-mode", scm_set_title_scroll_mode, 1, 0, false, "(set-title-scroll-mode mode) set title overflow mode: 0=truncate, 1=scroll");
 	s7_define_function(sc, "set-title-scroll-speed", scm_set_title_scroll_speed, 1, 0, false, "(set-title-scroll-speed speed) set scroll speed in pixels per tick");
 
-	/* Configuration setters */
-	s7_define_function(sc, "set-border-width", scm_set_border_width, 1, 0, false, "(set-border-width n) set window border width in pixels");
+	/* Configuration setters - NEW CLEAN API */
+	s7_define_function(sc, "set-bg-color", scm_set_bg_color, 1, 0, false, "(set-bg-color \"#RRGGBB\") set background/REPL color");
+	s7_define_function(sc, "set-bg-text-color", scm_set_bg_text_color, 1, 0, false, "(set-bg-text-color \"#RRGGBB\") set background/REPL text color");
+	s7_define_function(sc, "set-bar-color", scm_set_bar_color, 1, 0, false, "(set-bar-color \"#RRGGBB\") set status bar background color");
+	s7_define_function(sc, "set-bar-text-color", scm_set_bar_text_color, 1, 0, false, "(set-bar-text-color \"#RRGGBB\") set status bar text color");
+	s7_define_function(sc, "set-border-color", scm_set_border_color, 1, 0, false, "(set-border-color \"#RRGGBB\") set window highlight/border background color");
+	s7_define_function(sc, "set-border-line-color", scm_set_border_line_color, 1, 0, false, "(set-border-line-color \"#RRGGBB\") set box-drawing border line color");
+	s7_define_function(sc, "set-tag-count", scm_set_tag_count, 1, 0, false, "(set-tag-count n) set number of virtual desktops (1-9)");
+	s7_define_function(sc, "set-show-time", scm_set_show_time, 1, 0, false, "(set-show-time b) show/hide time in status bar");
+	s7_define_function(sc, "set-show-date", scm_set_show_date, 1, 0, false, "(set-show-date b) show/hide date in status bar");
+	s7_define_function(sc, "set-status-text", scm_set_status_text, 1, 0, false, "(set-status-text \"text\") custom status text (replaces date/time)");
 	s7_define_function(sc, "set-sloppy-focus", scm_set_sloppy_focus, 1, 0, false, "(set-sloppy-focus b) enable/disable focus follows mouse");
-	s7_define_function(sc, "set-border-color", scm_set_border_color, 1, 0, false, "(set-border-color \"#RRGGBB\") set unfocused border color");
-	s7_define_function(sc, "set-focus-color", scm_set_focus_color, 1, 0, false, "(set-focus-color \"#RRGGBB\") set focused border color");
-	s7_define_function(sc, "set-urgent-color", scm_set_urgent_color, 1, 0, false, "(set-urgent-color \"#RRGGBB\") set urgent border color");
-	s7_define_function(sc, "set-root-color", scm_set_root_color, 1, 0, false, "(set-root-color \"#RRGGBB\") set root/background color");
-	s7_define_function(sc, "set-frame-bg-color", scm_set_frame_bg_color, 1, 0, false, "(set-frame-bg-color \"#AARRGGBB\") set frame background");
-	s7_define_function(sc, "set-frame-fg-color", scm_set_frame_fg_color, 1, 0, false, "(set-frame-fg-color \"#AARRGGBB\") set frame foreground");
+	s7_define_function(sc, "on-startup", scm_on_startup, 0, 0, true, "(on-startup cmd1 cmd2 ...) register commands to run on startup");
+	
+	/* Font and input */
 	s7_define_function(sc, "set-font", scm_set_font, 2, 0, false, "(set-font path size) set grid font");
 	s7_define_function(sc, "set-repeat-rate", scm_set_repeat_rate, 2, 0, false, "(set-repeat-rate rate delay) set key repeat");
 	s7_define_function(sc, "set-tap-to-click", scm_set_tap_to_click, 1, 0, false, "(set-tap-to-click b) enable/disable tap to click");
@@ -4817,27 +5231,51 @@ setup_scheme(void)
 	s7_define_variable(sc, "MON-RIGHT", s7_make_integer(sc, WLR_DIRECTION_RIGHT));
 }
 
-static const char *default_config = 
+static const char *default_config_parts[] = {
 ";;; TurboWM config.scm - Scheme configuration\n"
 ";;; All settings can be changed at runtime with (reload-config)\n"
 "\n"
 ";;;; ==================== APPEARANCE ====================\n"
 "\n"
-";; Window borders\n"
-"(set-border-width 1)\n"
-"(set-border-color \"#444444\")   ; unfocused windows\n"
-"(set-focus-color \"#005577\")    ; focused window\n"
-"(set-urgent-color \"#ff0000\")   ; urgent windows\n"
+";; Colors - Format: #RRGGBB\n"
+";; Background/REPL color (black)\n"
+"(set-bg-color \"#000000\")\n"
 "\n"
-";; Frame colors (title bar and decorations)\n"
-";; Format: #AARRGGBB (alpha, red, green, blue)\n"
-"(set-frame-bg-color \"#ff0000aa\")  ; blue background\n"
-"(set-frame-fg-color \"#ffaaaaaa\")  ; gray text/lines\n"
+";; Background/REPL text color (grey)\n"
+"(set-bg-text-color \"#888888\")\n"
 "\n"
-";; Root/desktop background color\n"
-"(set-root-color \"#000000\")\n"
+";; Status bar background (the blue)\n"
+"(set-bar-color \"#0000aa\")\n"
 "\n"
-";; Title bar scrolling\n"
+";; Status bar text color (grey)\n"
+"(set-bar-text-color \"#aaaaaa\")\n"
+"\n"
+";; Window highlight/border background (the blue)\n"
+"(set-border-color \"#0000aa\")\n"
+"\n"
+";; Box-drawing border lines (the grey)\n"
+"(set-border-line-color \"#aaaaaa\")\n"
+"\n"
+";; Number of virtual desktops/tags (1-9)\n"
+"(set-tag-count 9)\n"
+"\n"
+";;;; ==================== STARTUP COMMANDS ====================\n"
+"\n"
+";; Commands to run when the compositor starts\n"
+";; Uncomment and customize as needed:\n"
+";; (on-startup \"waybar\" \"mako\" \"foot --server\")\n"
+"\n"
+";;;; ==================== STATUS BAR ====================\n"
+"\n"
+";; Show date and time in status bar\n"
+"(set-show-date #t)\n"
+"(set-show-time #t)\n"
+"\n"
+";; Custom status text (if set, replaces date/time)\n"
+";; Use this from scripts to show anything: battery, wifi, etc.\n"
+";; (set-status-text \"Battery: 85%\")\n"
+"\n"
+";; Title bar scrolling for long titles\n"
 "(set-title-scroll-mode 1)   ; 1 = scroll, 0 = truncate with ...\n"
 "(set-title-scroll-speed 30) ; pixels per second\n"
 "\n"
@@ -4897,7 +5335,11 @@ static const char *default_config =
 "(bind-key \"M-S-j\" (lambda () (swap-dir DIR-DOWN)))\n"
 "(bind-key \"M-S-k\" (lambda () (swap-dir DIR-UP)))\n"
 "(bind-key \"M-S-l\" (lambda () (swap-dir DIR-RIGHT)))\n"
-"\n"
+"(bind-key \"M-S-Left\" (lambda () (swap-dir DIR-LEFT)))\n"
+"(bind-key \"M-S-Down\" (lambda () (swap-dir DIR-DOWN)))\n"
+"(bind-key \"M-S-Up\" (lambda () (swap-dir DIR-UP)))\n"
+"(bind-key \"M-S-Right\" (lambda () (swap-dir DIR-RIGHT)))\n",
+
 ";; Fullscreen and floating\n"
 "(bind-key \"M-f\" (lambda () (toggle-fullscreen)))\n"
 "(bind-key \"M-S-space\" (lambda () (toggle-floating)))\n"
@@ -4922,8 +5364,8 @@ static const char *default_config =
 "(bind-key \"M-S-asciicircum\" (lambda () (tag-window 6)))\n"
 "(bind-key \"M-S-ampersand\" (lambda () (tag-window 7)))\n"
 "(bind-key \"M-S-asterisk\" (lambda () (tag-window 8)))\n"
-"(bind-key \"M-S-parenleft\" (lambda () (tag-window 9)))\n"
-"\n"
+"(bind-key \"M-S-parenleft\" (lambda () (tag-window 9)))\n",
+
 ";; Refresh layout\n"
 "(bind-key \"M-S-r\" (lambda () (refresh)))\n"
 "\n"
@@ -4934,15 +5376,100 @@ static const char *default_config =
 ";; Super+Shift+; (Win+:) to open, Escape to close\n"
 "(bind-key \"M-S-colon\" (lambda () (toggle-repl)))\n"
 "\n"
-";; TTY switching (Ctrl+Alt+F1-F6)\n"
+";; TTY switching (Ctrl+Alt+F1-F12)\n"
 "(bind-key \"C-A-F1\" (lambda () (chvt 1)))\n"
 "(bind-key \"C-A-F2\" (lambda () (chvt 2)))\n"
 "(bind-key \"C-A-F3\" (lambda () (chvt 3)))\n"
 "(bind-key \"C-A-F4\" (lambda () (chvt 4)))\n"
 "(bind-key \"C-A-F5\" (lambda () (chvt 5)))\n"
 "(bind-key \"C-A-F6\" (lambda () (chvt 6)))\n"
+"(bind-key \"C-A-F7\" (lambda () (chvt 7)))\n"
+"(bind-key \"C-A-F8\" (lambda () (chvt 8)))\n"
+"(bind-key \"C-A-F9\" (lambda () (chvt 9)))\n"
+"(bind-key \"C-A-F10\" (lambda () (chvt 10)))\n"
+"(bind-key \"C-A-F11\" (lambda () (chvt 11)))\n"
+"(bind-key \"C-A-F12\" (lambda () (chvt 12)))\n"
 "\n"
-"(log \"TurboWM config loaded!\")\n";
+";;; === Complete Scheme binding examples ===\n"
+";; Control and window management\n"
+"(bind-key \"M-Return\" (lambda () (spawn \"foot\")))\n"
+"(bind-key \"M-d\" (lambda () (toggle-launcher)))\n"
+"(bind-key \"M-q\" (lambda () (kill-client)))\n"
+"(bind-key \"M-S-e\" (lambda () (quit)))\n"
+"\n"
+";; Focus (vim & arrows)\n"
+"(bind-key \"M-h\" (lambda () (focus-dir DIR-LEFT)))\n"
+"(bind-key \"M-j\" (lambda () (focus-dir DIR-DOWN)))\n"
+"(bind-key \"M-k\" (lambda () (focus-dir DIR-UP)))\n"
+"(bind-key \"M-l\" (lambda () (focus-dir DIR-RIGHT)))\n"
+"(bind-key \"M-Left\" (lambda () (focus-dir DIR-LEFT)))\n"
+"(bind-key \"M-Down\" (lambda () (focus-dir DIR-DOWN)))\n"
+"(bind-key \"M-Up\" (lambda () (focus-dir DIR-UP)))\n"
+"(bind-key \"M-Right\" (lambda () (focus-dir DIR-RIGHT)))\n"
+"\n"
+";; Swap windows (vim & arrows)\n"
+"(bind-key \"M-S-h\" (lambda () (swap-dir DIR-LEFT)))\n"
+"(bind-key \"M-S-j\" (lambda () (swap-dir DIR-DOWN)))\n"
+"(bind-key \"M-S-k\" (lambda () (swap-dir DIR-UP)))\n"
+"(bind-key \"M-S-l\" (lambda () (swap-dir DIR-RIGHT)))\n"
+"(bind-key \"M-S-Left\" (lambda () (swap-dir DIR-LEFT)))\n"
+"(bind-key \"M-S-Down\" (lambda () (swap-dir DIR-DOWN)))\n"
+"(bind-key \"M-S-Up\" (lambda () (swap-dir DIR-UP)))\n"
+"(bind-key \"M-S-Right\" (lambda () (swap-dir DIR-RIGHT)))\n"
+"\n"
+";; Move/Resize with mouse or keyboard examples\n"
+"(bind-mouse \"M-button1\" (lambda () (move-window)))\n"
+"(bind-mouse \"M-button3\" (lambda () (resize-window)))\n"
+"(bind-key \"M-S-m\" (lambda () (move-window))) ; example keybinding\n"
+"(bind-key \"M-S-r\" (lambda () (resize-window))) ; example keybinding\n"
+"\n"
+";; Layouts & master area\n"
+"(bind-key \"M-f\" (lambda () (set-layout \"float\")))\n"
+"(bind-key \"M-S-\" (lambda () (cycle-layout))) ; use a key you like\n"
+"(bind-key \"M-h\" (lambda () (inc-mfact -0.05))) ; shrink master (example)\n"
+"(bind-key \"M-l\" (lambda () (inc-mfact 0.05))) ; grow master (example)\n"
+"(bind-key \"M-0\" (lambda () (view-all))) ; view all\n"
+"\n"
+";; Tagging\n"
+"(bind-key \"M-1\" (lambda () (view-tag 1)))\n"
+"(bind-key \"M-S-exclam\" (lambda () (tag-window 1))) ; move to tag 1\n"
+"\n"
+";; REPL & reload\n"
+"(bind-key \"M-S-colon\" (lambda () (toggle-repl)))\n"
+"(bind-key \"M-S-c\" (lambda () (reload-config)))\n"
+"(bind-key \"M-S-r\" (lambda () (refresh)))\n"
+"(bind-key \"M-;\" (lambda () (set-repl-log-level 1))) ; example to set repl log level to INFO\n"
+"\n"
+";; Misc: toggle fullscreen/floating, kill, help\n"
+"(bind-key \"M-f\" (lambda () (toggle-fullscreen)))\n"
+"(bind-key \"M-S-space\" (lambda () (toggle-floating)))\n"
+"(bind-key \"M-k\" (lambda () (kill-client)))\n"
+"(bind-key \"M-h\" (lambda () (help))) ; show help in REPL\n"
+"\n"
+";; Advanced setters (examples - not necessarily key bound):\n"
+";; (set-border-width 2)\n"
+";; (set-border-color \"#FF0000\")\n"
+";; (set-frame-bg-color \"#FF0000FF\")\n"
+";; (set-font \"/path/to/font.ttf\" 16)\n"
+"\n"
+";;;; ==================== EXTERNAL CONFIG SYNC ====================\n"
+";; Sync colors to external apps. Uncomment and modify as needed.\n"
+";; This runs every time config is loaded/reloaded.\n"
+"\n"
+";; --- Foot terminal ---\n"
+";; (let* ((home (getenv \"HOME\"))\n"
+";;        (conf (string-append home \"/.config/foot/foot.ini\")))\n"
+";;   (system (string-append \"mkdir -p \" home \"/.config/foot\"))\n"
+";;   (if (file-exists? conf)\n"
+";;       (system (string-append \"cp \" conf \" \" conf \".bak\")))\n"
+";;   (call-with-output-file conf\n"
+";;     (lambda (p)\n"
+";;       (display \"[main]\\nfont=monospace:size=10\\n\\n[colors]\\n\" p)\n"
+";;       (display \"background=000000\\nforeground=aaaaaa\\n\" p))))\n"
+"\n"
+"(log \"TurboWM config loaded!\")\n",
+NULL
+};
 
 void
 load_config(void)
@@ -4960,35 +5487,48 @@ load_config(void)
 	f = fopen(path, "r");
 	if (!f) {
 		/* Create default config */
-		fprintf(stderr, "tbwm: creating default config at %s\n", path);
+		tbwm_log(TBWM_LOG_INFO, "tbwm: creating default config at %s\n", path);
 		
 		/* Create directory */
 		mkdir(dir, 0755);
 		
 		f = fopen(path, "w");
 		if (f) {
-			fputs(default_config, f);
+			/* Write default config as multiple parts to avoid very-large single string literals */
+			for (int i = 0; default_config_parts[i]; ++i)
+				fputs(default_config_parts[i], f);
 			fclose(f);
 		} else {
-			fprintf(stderr, "tbwm: warning: could not create config file\n");
-			/* Evaluate default config directly */
-			s7_eval_c_string(sc, default_config);
+			tbwm_log(TBWM_LOG_WARN, "tbwm: warning: could not create config file\n");
+			/* Evaluate default config parts directly */
+			for (int i = 0; default_config_parts[i]; ++i)
+				s7_eval_c_string(sc, default_config_parts[i]);
 			return;
 		}
 		f = fopen(path, "r");
-	}
+	} 
 	
 	if (f) {
 		fclose(f);
-		fprintf(stderr, "tbwm: loading config from %s\n", path);
+		tbwm_log(TBWM_LOG_INFO, "tbwm: loading config from %s\n", path);
+		/* Clear existing Scheme and mouse bindings first to avoid duplicates on reload */
+		tbwm_log(TBWM_LOG_INFO, "tbwm: clearing %d scheme bindings and %d mouse bindings before loading config\n", scheme_binding_count, cfg_mouse_binding_count);
+		unbind_all_scheme_bindings();
+		clear_mouse_bindings_internal();
 		s7_load(sc, path);
-	}
+		/* Ensure arrow swap bindings exist (guard against config truncation/parsing issues) */
+		file_debug_log("tbwm-scm: ensuring M-S-Left/Right/Up/Down are bound\n");
+		s7_eval_c_string(sc, "(bind-key \"M-S-Left\" (lambda () (swap-dir DIR-LEFT)))");
+		s7_eval_c_string(sc, "(bind-key \"M-S-Right\" (lambda () (swap-dir DIR-RIGHT)))");
+		s7_eval_c_string(sc, "(bind-key \"M-S-Up\" (lambda () (swap-dir DIR-UP)))");
+		s7_eval_c_string(sc, "(bind-key \"M-S-Down\" (lambda () (swap-dir DIR-DOWN)))");
+	} 
 }
 
 /* ==================== END SCHEME BINDINGS ==================== */
 
 static const char *foot_config =
-"# Minimal Retro Foot Configuration\n"
+"# tbwm foot configuration\n"
 "\n"
 "[main]\n"
 "font=PxPlus IBM VGA 8x16:size=12\n"
@@ -5056,7 +5596,7 @@ setup_foot_config(void)
 				while ((n = fread(buf, 1, sizeof(buf), src)) > 0)
 					fwrite(buf, 1, n, dst);
 				fclose(dst);
-				fprintf(stderr, "tbwm: installed font to %s\n", fontdst);
+				tbwm_log(TBWM_LOG_INFO, "tbwm: installed font to %s\n", fontdst);
 
 				/* Update font cache */
 				if (fork() == 0) {
@@ -5079,7 +5619,7 @@ setup_foot_config(void)
 
 	/* Back up existing config if it exists and no backup exists yet */
 	if (stat(path, &st) == 0 && stat(backup, &st) != 0) {
-		fprintf(stderr, "tbwm: backing up existing foot.ini to %s\n", backup);
+		tbwm_log(TBWM_LOG_INFO, "tbwm: backing up existing foot.ini to %s\n", backup);
 		rename(path, backup);
 	}
 
@@ -5088,10 +5628,10 @@ setup_foot_config(void)
 	if (f) {
 		fputs(foot_config, f);
 		fclose(f);
-		fprintf(stderr, "tbwm: installed foot config at %s\n", path);
+		tbwm_log(TBWM_LOG_INFO, "tbwm: installed foot config at %s\n", path);
 	} else {
-		fprintf(stderr, "tbwm: warning: could not write foot config\n");
-	}
+		tbwm_log(TBWM_LOG_WARN, "tbwm: warning: could not write foot config\n");
+	} 
 }
 
 static int
@@ -5144,7 +5684,7 @@ buildappcache(void)
 					size_t new_capacity = capacity * 2;
 					char **tmp = realloc(app_cache, new_capacity * sizeof(char *));
 					if (!tmp) {
-						fprintf(stderr, "tbwm: warning: cannot grow app cache to %zu entries: %s\n", new_capacity, strerror(errno));
+						 tbwm_log(TBWM_LOG_WARN, "tbwm: warning: cannot grow app cache to %zu entries: %s\n", new_capacity, strerror(errno));
 						/* stop adding further entries to avoid inconsistent state */
 						break;
 					}
@@ -5160,7 +5700,7 @@ buildappcache(void)
 	free(path_copy);
 
 	qsort(app_cache, app_cache_count, sizeof(char *), app_compare);
-	fprintf(stderr, "Built app cache: %d entries\n", app_cache_count);
+	tbwm_log(TBWM_LOG_INFO, "Built app cache: %d entries", app_cache_count);
 }
 
 int
@@ -5237,6 +5777,14 @@ togglerepl(const Arg *arg)
 	updaterepl();
 }
 
+/* Key helper: reload configuration (wrapper so we can bind it in C defaults) */
+void
+reload_config_key(const Arg *arg)
+{
+	load_config();
+	tbwm_log(TBWM_LOG_INFO, "tbwm: config reloaded via keybinding\n");
+}
+
 void
 repl_add_line(const char *line)
 {
@@ -5255,6 +5803,36 @@ repl_add_line(const char *line)
 	}
 	repl_scroll_offset = 0;
 	updaterepl();
+}
+
+#define TBWM_LOG_DEBUG 0
+#define TBWM_LOG_INFO 1
+#define TBWM_LOG_WARN 2
+#define TBWM_LOG_ERROR 3
+
+void
+tbwm_log(int level, const char *fmt, ...)
+{
+	char buf[512];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+
+	/* Always write to debug file */
+	file_debug_log("%s", buf);
+
+	/* Also emit to stderr so external libraries still see the messages */
+	fprintf(stderr, "%s\n", buf);
+
+	/* Send warnings/errors to REPL (trim to REPL_LINE_LEN-1)
+	 * Note: REPL only receives lines with level >= cfg_repl_log_level */
+	if (level >= cfg_repl_log_level) {
+		char line[REPL_LINE_LEN];
+		strncpy(line, buf, REPL_LINE_LEN - 1);
+		line[REPL_LINE_LEN - 1] = '\0';
+		repl_add_line(line);
+	}
 }
 
 void
@@ -5384,7 +5962,7 @@ updaterepl(void)
 	
 	/* Fill with background color */
 	for (i = 0; i < width * height; i++)
-		pixels[i] = 0xFF000000;  /* black background for REPL */
+		pixels[i] = RGB_TO_ARGB(cfg_bg_color);
 	
 	/* Calculate visible lines (leave space for bar at top) */
 	visible_lines = (height - cell_height) / cell_height;
@@ -5402,7 +5980,7 @@ updaterepl(void)
 		
 		/* Render the line */
 		while (*line && x < width - cell_width) {
-			render_char_to_buffer(pixels, width, height, x, y, (unsigned char)*line, cfg_frame_fg_color);
+			render_char_to_buffer(pixels, width, height, x, y, (unsigned char)*line, RGB_TO_ARGB(cfg_bg_text_color));
 			x += cell_width;
 			line++;
 		}
@@ -5414,7 +5992,7 @@ updaterepl(void)
 	if (repl_scroll_offset > 0) {
 		x = width - cell_width * 3;
 		render_char_to_buffer(pixels, width, height, x, height - cell_height * 2, 
-			0x25BC, cfg_frame_fg_color); /* ▼ */
+			0x25BC, RGB_TO_ARGB(cfg_bg_text_color)); /* ▼ */
 	}
 	
 	/* Create or update the REPL buffer */
@@ -5464,7 +6042,7 @@ updatebar(Monitor *m)
 
 	/* Fill background */
 	for (i = 0; i < width * cell_height; i++)
-		pixels[i] = cfg_frame_bg_color;
+		pixels[i] = RGB_TO_ARGB(cfg_bar_color);
 
 	x = 0;
 
@@ -5472,31 +6050,31 @@ updatebar(Monitor *m)
 		/* === REPL INPUT MODE === */
 		prompt = "Scheme> ";
 		for (i = 0; prompt[i] && x < width; i++) {
-			render_char_to_buffer(pixels, width, cell_height, x, 0, prompt[i], cfg_frame_fg_color);
+			render_char_to_buffer(pixels, width, cell_height, x, 0, prompt[i], RGB_TO_ARGB(cfg_bar_text_color));
 			x += cell_width;
 		}
 		/* Input text */
 		for (i = 0; i < repl_input_len && x < width; i++) {
-			render_char_to_buffer(pixels, width, cell_height, x, 0, repl_input[i], cfg_frame_fg_color);
+			render_char_to_buffer(pixels, width, cell_height, x, 0, repl_input[i], RGB_TO_ARGB(cfg_bar_text_color));
 			x += cell_width;
 		}
 		/* Cursor */
-		render_char_to_buffer(pixels, width, cell_height, x, 0, '_', cfg_frame_fg_color);
+		render_char_to_buffer(pixels, width, cell_height, x, 0, '_', RGB_TO_ARGB(cfg_bar_text_color));
 	} else if (launcher_active) {
 		/* === LAUNCHER MODE === */
 		prompt = "Launcher> ";
 		for (i = 0; prompt[i] && x < width; i++) {
-			render_char_to_buffer(pixels, width, cell_height, x, 0, prompt[i], cfg_frame_fg_color);
+			render_char_to_buffer(pixels, width, cell_height, x, 0, prompt[i], RGB_TO_ARGB(cfg_bar_text_color));
 			x += cell_width;
 		}
 		/* Input text */
 		for (i = 0; i < launcher_input_len && x < width; i++) {
-			render_char_to_buffer(pixels, width, cell_height, x, 0, launcher_input[i], cfg_frame_fg_color);
+			render_char_to_buffer(pixels, width, cell_height, x, 0, launcher_input[i], RGB_TO_ARGB(cfg_bar_text_color));
 			x += cell_width;
 		}
 		/* Separator */
 		x += cell_width;
-		render_char_to_buffer(pixels, width, cell_height, x, 0, '|', cfg_frame_fg_color);
+		render_char_to_buffer(pixels, width, cell_height, x, 0, '|', RGB_TO_ARGB(cfg_bar_text_color));
 		x += cell_width * 2;
 
 		/* Suggestions - only if there's input */
@@ -5512,8 +6090,8 @@ updatebar(Monitor *m)
 
 					/* Highlight selected suggestion */
 					if (shown == launcher_selection) {
-						bg = cfg_frame_fg_color;
-						fg = cfg_frame_bg_color;
+						bg = RGB_TO_ARGB(cfg_bar_text_color);
+						fg = RGB_TO_ARGB(cfg_bar_color);
 						/* Draw background */
 						for (py = 0; py < cell_height; py++) {
 							for (px = x; px < x + (len + 2) * cell_width && px < width; px++) {
@@ -5521,7 +6099,7 @@ updatebar(Monitor *m)
 							}
 						}
 					} else {
-						fg = cfg_frame_fg_color;
+						fg = RGB_TO_ARGB(cfg_bar_text_color);
 					}
 
 					render_char_to_buffer(pixels, width, cell_height, x, 0, '[', fg);
@@ -5538,8 +6116,8 @@ updatebar(Monitor *m)
 		}
 	} else {
 		/* === STATUS BAR MODE === */
-		/* Tags [1] [2] [3] ... */
-		for (tag = 0; tag < TAGCOUNT; tag++) {
+		/* Tags [1] [2] [3] ... - use cfg_tagcount */
+		for (tag = 0; tag < cfg_tagcount; tag++) {
 			/* Check if tag is occupied */
 			occupied = 0;
 			wl_list_for_each(c, &clients, link) {
@@ -5549,17 +6127,17 @@ updatebar(Monitor *m)
 				}
 			}
 
-			bg = cfg_frame_bg_color;
-			fg = cfg_frame_fg_color;
+			bg = RGB_TO_ARGB(cfg_bar_color);
+			fg = RGB_TO_ARGB(cfg_bar_text_color);
 
 			/* Highlight selected tag */
 			if (m->tagset[m->seltags] & (1 << tag)) {
-				bg = cfg_frame_fg_color;
-				fg = cfg_frame_bg_color;
+				bg = RGB_TO_ARGB(cfg_bar_text_color);
+				fg = RGB_TO_ARGB(cfg_bar_color);
 			}
 
 			/* Draw tag background if highlighted */
-			if (bg != cfg_frame_bg_color) {
+			if (bg != RGB_TO_ARGB(cfg_bar_color)) {
 				for (py = 0; py < cell_height; py++) {
 					for (px = x; px < x + 3 * cell_width && px < width; px++) {
 						pixels[py * width + px] = bg;
@@ -5578,7 +6156,7 @@ updatebar(Monitor *m)
 
 		/* Separator */
 		x += cell_width / 2;
-		render_char_to_buffer(pixels, width, cell_height, x, 0, '|', cfg_frame_fg_color);
+		render_char_to_buffer(pixels, width, cell_height, x, 0, '|', RGB_TO_ARGB(cfg_bar_text_color));
 		x += cell_width * 2;
 
 		/* Window tabs */
@@ -5612,12 +6190,12 @@ updatebar(Monitor *m)
 				if (!title) title = "?";
 
 				is_focused = (c == focustop(m));
-				bg = cfg_frame_bg_color;
-				fg = cfg_frame_fg_color;
+				bg = RGB_TO_ARGB(cfg_bar_color);
+				fg = RGB_TO_ARGB(cfg_bar_text_color);
 
 				if (is_focused) {
-					bg = cfg_frame_fg_color;
-					fg = cfg_frame_bg_color;
+					bg = RGB_TO_ARGB(cfg_bar_text_color);
+					fg = RGB_TO_ARGB(cfg_bar_color);
 				}
 
 				title_max = tab_width_cells - 2;
@@ -5699,30 +6277,67 @@ updatebar(Monitor *m)
 			}
 		}
 
-		/* Right-align date and time */
+		/* Right-align status: custom text OR date/time */
 		now = time(NULL);
 		tm_info = localtime(&now);
-		strftime(datebuf, sizeof(datebuf), "%Y-%m-%d", tm_info);
-		strftime(timebuf, sizeof(timebuf), "%I:%M:%S %p", tm_info);
-
-		date_len = strlen(datebuf);
-		time_len = strlen(timebuf);
-		right_x = width - (date_len + time_len + 5) * cell_width;
-
-		if (right_x > x) {
-			x = right_x;
-			render_char_to_buffer(pixels, width, cell_height, x, 0, '|', cfg_frame_fg_color);
-			x += cell_width * 2;
-			for (i = 0; datebuf[i]; i++) {
-				render_char_to_buffer(pixels, width, cell_height, x, 0, datebuf[i], cfg_frame_fg_color);
-				x += cell_width;
+		
+		/* Check if custom status text is set */
+		if (cfg_status_text[0] != '\0') {
+			/* Custom status text mode */
+			int status_len = strlen(cfg_status_text);
+			right_x = width - (status_len + 3) * cell_width;
+			
+			if (right_x > x) {
+				x = right_x;
+				render_char_to_buffer(pixels, width, cell_height, x, 0, '|', RGB_TO_ARGB(cfg_bar_text_color));
+				x += cell_width * 2;
+				for (i = 0; cfg_status_text[i]; i++) {
+					render_char_to_buffer(pixels, width, cell_height, x, 0, (unsigned char)cfg_status_text[i], RGB_TO_ARGB(cfg_bar_text_color));
+					x += cell_width;
+				}
 			}
-			x += cell_width;
-			render_char_to_buffer(pixels, width, cell_height, x, 0, '|', cfg_frame_fg_color);
-			x += cell_width * 2;
-			for (i = 0; timebuf[i]; i++) {
-				render_char_to_buffer(pixels, width, cell_height, x, 0, timebuf[i], cfg_frame_fg_color);
-				x += cell_width;
+		} else if (cfg_show_date || cfg_show_time) {
+			/* Date/time mode */
+			strftime(datebuf, sizeof(datebuf), "%Y-%m-%d", tm_info);
+			strftime(timebuf, sizeof(timebuf), "%I:%M:%S %p", tm_info);
+
+			date_len = cfg_show_date ? strlen(datebuf) : 0;
+			time_len = cfg_show_time ? strlen(timebuf) : 0;
+			
+			/* Calculate right-aligned position */
+			int total_chars = 0;
+			if (cfg_show_date && cfg_show_time) {
+				total_chars = date_len + time_len + 5; /* | date | time */
+			} else if (cfg_show_date) {
+				total_chars = date_len + 3; /* | date */
+			} else if (cfg_show_time) {
+				total_chars = time_len + 3; /* | time */
+			}
+			right_x = width - total_chars * cell_width;
+
+			if (right_x > x) {
+				x = right_x;
+				render_char_to_buffer(pixels, width, cell_height, x, 0, '|', RGB_TO_ARGB(cfg_bar_text_color));
+				x += cell_width * 2;
+				
+				if (cfg_show_date) {
+					for (i = 0; datebuf[i]; i++) {
+						render_char_to_buffer(pixels, width, cell_height, x, 0, datebuf[i], RGB_TO_ARGB(cfg_bar_text_color));
+						x += cell_width;
+					}
+					if (cfg_show_time) {
+						x += cell_width;
+						render_char_to_buffer(pixels, width, cell_height, x, 0, '|', RGB_TO_ARGB(cfg_bar_text_color));
+						x += cell_width * 2;
+					}
+				}
+				
+				if (cfg_show_time) {
+					for (i = 0; timebuf[i]; i++) {
+						render_char_to_buffer(pixels, width, cell_height, x, 0, timebuf[i], RGB_TO_ARGB(cfg_bar_text_color));
+						x += cell_width;
+					}
+				}
 			}
 		}
 	}
@@ -5979,7 +6594,7 @@ updateframe(Client *c)
 	else                     br_char = 0x255D; /* ╝ */
 
 	/* All windows use blue background */
-	bg_color = cfg_frame_bg_color;
+	bg_color = RGB_TO_ARGB(cfg_border_color);
 
 	/* === TOP FRAME === */
 	tb = ecalloc(1, sizeof(*tb));
@@ -5991,8 +6606,8 @@ updateframe(Client *c)
 		pixels[i] = bg_color;
 
 	/* Format: ╔═ title ═╗ with horizontal lines filling the rest */
-	render_char_to_buffer(pixels, width, cell_height, 0, 0, tl_char, cfg_frame_fg_color);
-	render_char_to_buffer(pixels, width, cell_height, cell_width, 0, h_line, cfg_frame_fg_color);
+	render_char_to_buffer(pixels, width, cell_height, 0, 0, tl_char, RGB_TO_ARGB(cfg_border_line_color));
+	render_char_to_buffer(pixels, width, cell_height, cell_width, 0, h_line, RGB_TO_ARGB(cfg_border_line_color));
 	
 	/* Calculate title positioning */
 	title_len = 0;
@@ -6014,16 +6629,16 @@ updateframe(Client *c)
 		
 		/* Fill cells 2 to (width/cell - 2) with h_line first */
 		for (fill_x = cell_width * 2; fill_x < width - cell_width * 2; fill_x += cell_width) {
-			render_char_to_buffer(pixels, width, cell_height, fill_x, 0, h_line, cfg_frame_fg_color);
+			render_char_to_buffer(pixels, width, cell_height, fill_x, 0, h_line, RGB_TO_ARGB(cfg_border_line_color));
 		}
 		
 		/* Title colors: inverted only for focused window */
 		if (focused) {
-			title_bg = cfg_frame_fg_color;  /* gray background */
+			title_bg = RGB_TO_ARGB(cfg_border_line_color);  /* gray background */
 			title_fg = bg_color;            /* blue text */
 		} else {
 			title_bg = bg_color;            /* blue background */
-			title_fg = cfg_frame_fg_color;  /* gray text */
+			title_fg = RGB_TO_ARGB(cfg_border_line_color);  /* gray text */
 		}
 		
 		/* Title starts at cell 2 */
@@ -6141,8 +6756,8 @@ updateframe(Client *c)
 	}
 	
 	/* End corner */
-	render_char_to_buffer(pixels, width, cell_height, width - cell_width * 2, 0, h_line, cfg_frame_fg_color);
-	render_char_to_buffer(pixels, width, cell_height, width - cell_width, 0, tr_char, cfg_frame_fg_color);
+	render_char_to_buffer(pixels, width, cell_height, width - cell_width * 2, 0, h_line, RGB_TO_ARGB(cfg_border_line_color));
+	render_char_to_buffer(pixels, width, cell_height, width - cell_width, 0, tr_char, RGB_TO_ARGB(cfg_border_line_color));
 
 	if (!c->frame_top)
 		c->frame_top = wlr_scene_buffer_create(c->scene, NULL);
@@ -6161,12 +6776,12 @@ updateframe(Client *c)
 		for (i = 0; i < width * cell_height; i++)
 			pixels[i] = bg_color;
 
-		render_char_to_buffer(pixels, width, cell_height, 0, 0, bl_char, cfg_frame_fg_color);
+		render_char_to_buffer(pixels, width, cell_height, 0, 0, bl_char, RGB_TO_ARGB(cfg_border_line_color));
 		
 		for (x = cell_width; x < width - cell_width; x += cell_width)
-			render_char_to_buffer(pixels, width, cell_height, x, 0, h_line, cfg_frame_fg_color);
+			render_char_to_buffer(pixels, width, cell_height, x, 0, h_line, RGB_TO_ARGB(cfg_border_line_color));
 		
-		render_char_to_buffer(pixels, width, cell_height, width - cell_width, 0, br_char, cfg_frame_fg_color);
+		render_char_to_buffer(pixels, width, cell_height, width - cell_width, 0, br_char, RGB_TO_ARGB(cfg_border_line_color));
 
 		if (!c->frame_bottom)
 			c->frame_bottom = wlr_scene_buffer_create(c->scene, NULL);
@@ -6193,7 +6808,7 @@ updateframe(Client *c)
 				pixels[i] = bg_color;
 
 			for (i = 0; i < rows; i++)
-				render_char_to_buffer(pixels, cell_width, side_height, 0, i * cell_height, v_line, cfg_frame_fg_color);
+				render_char_to_buffer(pixels, cell_width, side_height, 0, i * cell_height, v_line, RGB_TO_ARGB(cfg_border_line_color));
 
 			if (!c->frame_left)
 				c->frame_left = wlr_scene_buffer_create(c->scene, NULL);
@@ -6221,7 +6836,7 @@ updateframe(Client *c)
 				pixels[i] = bg_color;
 
 			for (i = 0; i < rows; i++)
-				render_char_to_buffer(pixels, cell_width, side_height, 0, i * cell_height, v_line, cfg_frame_fg_color);
+				render_char_to_buffer(pixels, cell_width, side_height, 0, i * cell_height, v_line, RGB_TO_ARGB(cfg_border_line_color));
 
 			if (!c->frame_right)
 				c->frame_right = wlr_scene_buffer_create(c->scene, NULL);
