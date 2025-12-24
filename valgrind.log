@@ -1,5 +1,0 @@
-==911== Memcheck, a memory error detector
-==911== Copyright (C) 2002-2024, and GNU GPL'd, by Julian Seward et al.
-==911== Using Valgrind-3.25.1 and LibVEX; rerun with -h for copyright info
-==911== Command: ./tbwm
-==911== 

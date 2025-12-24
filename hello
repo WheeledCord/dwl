@@ -1,3 +1,0 @@
-valgrind --leak-check=full --show-leak-kinds=all ./tbwm 2>&1 | tee valgrind.log
-
-# Let it run, then Ctrl+C and check valgrind.log
