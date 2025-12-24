@@ -11,6 +11,8 @@ all the functions you can use in config.scm
 (set-bar-text-color "#RRGGBB")    ; status bar text
 (set-border-color "#RRGGBB")      ; window frame bg
 (set-border-line-color "#RRGGBB") ; box drawing chars
+(set-menu-color "#RRGGBB")        ; app menu bg
+(set-menu-text-color "#RRGGBB")   ; app menu text
 ```
 
 ## font
@@ -130,6 +132,8 @@ modifiers: M=super S=shift C=ctrl A=alt
 ```scheme
 (toggle-launcher)
 (toggle-repl)
+(toggle-appmenu)            ; toggle app menu
+(set-menu-button "X")       ; set menu button label (default "X")
 (reload-config)
 (quit)
 (chvt 2)           ; switch to tty2

@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -75,7 +76,7 @@
 #include <xcb/xcb_icccm.h>
 #endif
 
-#include <cairo.h>
+/* Cairo removed - using FreeType directly for text rendering */
 #include <drm_fourcc.h>
 #include <wlr/interfaces/wlr_buffer.h>
 #include <ft2build.h>
@@ -162,6 +163,13 @@ typedef struct {
 	char prev_mon_name[64]; /* remember monitor name for VT switch restore */
 	DwindleNode *dwindle;    /* dwindle layout node (NULL if floating) */
 	int needs_title_scroll;  /* 1 if title overflows and needs scrolling */
+	/* Cached frame buffers for reuse (avoid per-frame allocation) */
+	struct TitleBuffer *frame_top_buf;
+	struct TitleBuffer *frame_bottom_buf;
+	struct TitleBuffer *frame_left_buf;
+	struct TitleBuffer *frame_right_buf;
+	int frame_width;  /* cached dimensions to detect resize */
+	int frame_height;
 } Client;
 
 typedef struct {
@@ -218,12 +226,21 @@ struct DwindleNode {
 	Monitor *mon;
 };
 
+/* Text buffer for title bars - defined early for Monitor struct */
+struct TitleBuffer {
+	struct wlr_buffer base;
+	void *data;
+	int stride;
+};
+
 struct Monitor {
 	struct wl_list link;
 	struct wlr_output *wlr_output;
 	struct wlr_scene_output *scene_output;
 	struct wlr_scene_rect *fullscreen_bg; /* See createmon() for info */
 	struct wlr_scene_buffer *bar; /* status bar / launcher */
+	struct TitleBuffer *bar_buf;  /* cached bar buffer for reuse */
+	int bar_width;                /* cached width to detect resize */
 	struct wl_listener frame;
 	struct wl_listener destroy;
 	struct wl_listener request_state;
@@ -413,10 +430,13 @@ static void render_char_clipped(uint32_t *pixels, int buf_w, int buf_h, int x, i
 static unsigned long utf8_decode(const char *s, int *pos);
 static void updatebar(Monitor *m);
 static void updatebars(void);
+static void updateappmenu(void);
+static int appmenu_item_count(void);
 static int bartimer(void *data);
 static int scrolltimer(void *data);
 static void togglelauncher(const Arg *arg);
 static void togglerepl(const Arg *arg);
+static void toggleappmenu(const Arg *arg);
 static void updaterepl(void);
 static void repl_add_line(const char *line);
 void tbwm_log(int level, const char *fmt, ...);
@@ -453,6 +473,20 @@ static int cell_width = 8;
 static int cell_height = 16;
 static FT_Library ft_library;
 static FT_Face ft_face;
+
+/* Glyph cache - store pre-rendered glyphs to avoid repeated FT_Load_Char calls */
+#define GLYPH_CACHE_SIZE 512
+typedef struct {
+	unsigned long charcode;
+	int valid;
+	int width;
+	int rows;
+	int pitch;
+	int bitmap_left;
+	int bitmap_top;
+	unsigned char *bitmap; /* allocated buffer for glyph bitmap */
+} CachedGlyph;
+static CachedGlyph glyph_cache[GLYPH_CACHE_SIZE];
 
 /* Launcher state */
 static int launcher_active = 0;
@@ -520,6 +554,8 @@ static char cfg_status_text[256] = ""; /* Custom status text (overrides date/tim
  * cfg_bar_text_color    = status bar text (grey)
  * cfg_border_color      = window border/frame highlight (blue)
  * cfg_border_line_color = box-drawing characters (grey)
+ * cfg_menu_color        = app menu background (grey)
+ * cfg_menu_text_color   = app menu text (white)
  */
 static uint32_t cfg_bg_color = 0x000000;           /* black background */
 static uint32_t cfg_bg_text_color = 0xaaaaaa;      /* grey text */
@@ -527,6 +563,40 @@ static uint32_t cfg_bar_color = 0x0000aa;          /* blue bar background */
 static uint32_t cfg_bar_text_color = 0xaaaaaa;     /* grey bar text */
 static uint32_t cfg_border_color = 0x0000aa;       /* blue highlight */
 static uint32_t cfg_border_line_color = 0xaaaaaa;  /* grey box-drawing */
+static uint32_t cfg_menu_color = 0xaaaaaa;         /* grey menu background */
+static uint32_t cfg_menu_text_color = 0x000000;    /* black menu text */
+static char cfg_menu_button[16] = "X";             /* app menu button label */
+
+/* App menu state */
+static int appmenu_active = 0;
+static struct wlr_scene_buffer *appmenu_buffer = NULL;
+
+/* App launcher data structures */
+#define MAX_APPS 512
+#define MAX_CATEGORIES 32
+#define APP_NAME_LEN 64
+#define APP_EXEC_LEN 256
+#define CAT_NAME_LEN 32
+
+typedef struct {
+	char name[APP_NAME_LEN];
+	char exec[APP_EXEC_LEN];
+	char category[CAT_NAME_LEN];
+} AppEntry;
+
+typedef struct {
+	char name[CAT_NAME_LEN];
+	int app_count;
+} CategoryEntry;
+
+static AppEntry app_entries[MAX_APPS];
+static int app_entry_count = 0;
+static CategoryEntry categories[MAX_CATEGORIES];
+static int category_count = 0;
+static int menu_current_category = -1;  /* -1 = showing categories, >=0 = showing apps in that category */
+static int menu_scroll_offset = 0;
+static int menu_selected_row = 0;       /* currently selected row (keyboard nav) */
+static int apps_loaded = 0;
 
 /* Startup commands */
 #define MAX_STARTUP_CMDS 32
@@ -538,7 +608,6 @@ static int cfg_startup_ran = 0;
 static float cfg_rootcolor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
 static float cfg_bordercolor[4] = {0.267f, 0.267f, 0.267f, 1.0f};
 static float cfg_focuscolor[4] = {0.0f, 0.333f, 0.467f, 1.0f};
-static float cfg_urgentcolor[4] = {1.0f, 0.0f, 0.0f, 1.0f};
 static float cfg_fullscreen_bg[4] = {0.0f, 0.0f, 0.0f, 1.0f};
 
 /* Grid font settings */
@@ -546,11 +615,6 @@ static char cfg_font_path[512] = "/home/fionn/.local/share/fonts/PxPlus_IBM_VGA_
 static int cfg_font_size = 16;
 
 /* Keyboard settings */
-static char cfg_xkb_rules[64] = "";
-static char cfg_xkb_model[64] = "";
-static char cfg_xkb_layout[64] = "";
-static char cfg_xkb_variant[64] = "";
-static char cfg_xkb_options[128] = "";
 static int cfg_repeat_rate = 25;
 static int cfg_repeat_delay = 600;
 
@@ -616,6 +680,39 @@ ensure_mouse_bindings_capacity(int extra)
 static int cfg_log_level = WLR_ERROR;
 
 /* ==================== END RUNTIME CONFIG ==================== */
+
+/* Debug counters for buffer leak detection */
+static int titlebuf_alloc_count = 0;
+static int titlebuf_free_count = 0;
+static int glyph_malloc_count = 0;
+static int glyph_free_count = 0;
+static size_t glyph_total_bytes = 0;
+
+static void titlebuf_destroy(struct wlr_buffer *buf) {
+	struct TitleBuffer *tb = wl_container_of(buf, tb, base);
+	titlebuf_free_count++;
+	free(tb->data);
+	free(tb);
+}
+
+static bool titlebuf_begin_data_ptr_access(struct wlr_buffer *buf,
+		uint32_t flags, void **data, uint32_t *format, size_t *stride) {
+	struct TitleBuffer *tb = wl_container_of(buf, tb, base);
+	*data = tb->data;
+	*format = DRM_FORMAT_ARGB8888;
+	*stride = tb->stride;
+	return true;
+}
+
+static void titlebuf_end_data_ptr_access(struct wlr_buffer *buf) {
+	/* Nothing to do */
+}
+
+static const struct wlr_buffer_impl titlebuf_impl = {
+	.destroy = titlebuf_destroy,
+	.begin_data_ptr_access = titlebuf_begin_data_ptr_access,
+	.end_data_ptr_access = titlebuf_end_data_ptr_access,
+};
 
 static pid_t child_pid = -1;
 static int locked;
@@ -874,6 +971,36 @@ axisnotify(struct wl_listener *listener, void *data)
 	 * for example when you move the scroll wheel. */
 	struct wlr_pointer_axis_event *event = data;
 	wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
+	
+	/* Handle app menu scrolling */
+	if (appmenu_active && selmon && event->orientation == WL_POINTER_AXIS_VERTICAL_SCROLL) {
+		int menu_x = selmon->m.x;
+		int menu_y = selmon->m.y + cell_height;
+		int menu_w = 25 * cell_width;
+		int menu_h = 25 * cell_height;
+		
+		if (cursor->x >= menu_x && cursor->x < menu_x + menu_w &&
+		    cursor->y >= menu_y && cursor->y < menu_y + menu_h) {
+			int item_count = appmenu_item_count();
+			int content_rows = 23;
+			
+			if (event->delta > 0) {
+				/* Scroll down */
+				if (menu_scroll_offset + content_rows < item_count) {
+					menu_scroll_offset++;
+					updateappmenu();
+				}
+			} else if (event->delta < 0) {
+				/* Scroll up */
+				if (menu_scroll_offset > 0) {
+					menu_scroll_offset--;
+					updateappmenu();
+				}
+			}
+			return; /* Consume the scroll event */
+		}
+	}
+	
 	/* TODO: allow usage of scroll wheel for mousebindings, it can be implemented
 	 * by checking the event's orientation and the delta of the event */
 	/* Notify the client with pointer focus of the axis event. */
@@ -899,6 +1026,178 @@ buttonpress(struct wl_listener *listener, void *data)
 		selmon = xytomon(cursor->x, cursor->y);
 		if (locked)
 			break;
+
+		/* Check for menu button click FIRST - this should toggle the menu */
+		if (selmon && cursor->y >= selmon->m.y && cursor->y < selmon->m.y + cell_height) {
+			int bar_x = cursor->x - selmon->m.x;
+			int btn_len = strlen(cfg_menu_button);
+			int btn_cells = btn_len + 2; /* [btn] */
+			int menu_btn_end = btn_cells * cell_width;
+			
+			if (bar_x >= 0 && bar_x < menu_btn_end) {
+				/* Clicked on menu button - toggle */
+				Arg a = {0};
+				toggleappmenu(&a);
+				return;
+			}
+		}
+
+		/* Handle app menu clicks */
+		if (appmenu_active && selmon) {
+			int menu_x = selmon->m.x;
+			int menu_y = selmon->m.y + cell_height;
+			int menu_w = 25 * cell_width;
+			int menu_h = 25 * cell_height;
+			
+			if (cursor->x >= menu_x && cursor->x < menu_x + menu_w &&
+			    cursor->y >= menu_y && cursor->y < menu_y + menu_h) {
+				/* Click is inside menu */
+				int rel_y = cursor->y - menu_y;
+				int clicked_row = rel_y / cell_height;
+				
+				/* Row 0 is title bar, rows 1-23 are content, row 24 is bottom */
+				if (clicked_row >= 1 && clicked_row <= 23) {
+					int content_row = clicked_row - 1;
+					
+					if (menu_current_category < 0) {
+						/* Clicked on a category */
+						int cat_idx = content_row + menu_scroll_offset;
+						if (cat_idx < category_count) {
+							menu_current_category = cat_idx;
+							menu_scroll_offset = 0;
+							updateappmenu();
+						}
+					} else {
+						/* In apps view */
+						if (content_row == 0) {
+							/* Clicked "Back" */
+							menu_current_category = -1;
+							menu_scroll_offset = 0;
+							updateappmenu();
+						} else {
+							/* Clicked on an app */
+							const char *selected_cat = categories[menu_current_category].name;
+							int app_idx = 0;
+							int display_row = 1;
+							int i;
+							
+							for (i = 0; i < app_entry_count; i++) {
+								if (strcmp(app_entries[i].category, selected_cat) == 0) {
+									if (app_idx >= menu_scroll_offset) {
+										if (display_row == content_row) {
+											/* Found the clicked app - launch it */
+											Arg a = { .v = (const char*[]){ "/bin/sh", "-c", app_entries[i].exec, NULL } };
+											spawn(&a);
+											/* Close menu after launching */
+											appmenu_active = 0;
+											updateappmenu();
+											updatebars();
+											return;
+										}
+										display_row++;
+									}
+									app_idx++;
+								}
+							}
+						}
+					}
+				}
+				return; /* Consume the click */
+			} else {
+				/* Click outside menu - close it */
+				appmenu_active = 0;
+				updateappmenu();
+				updatebars();
+			}
+		}
+
+		/* Handle clicks on the status bar */
+		if (selmon && cursor->y >= selmon->m.y && cursor->y < selmon->m.y + cell_height) {
+			int bar_x = cursor->x - selmon->m.x;
+			int x = 0;
+			
+			/* Menu button region: [Menu] - variable length */
+			int btn_len = strlen(cfg_menu_button);
+			int btn_cells = btn_len + 2; /* [btn] */
+			int menu_btn_end = btn_cells * cell_width;
+			
+			if (bar_x >= 0 && bar_x < menu_btn_end) {
+				/* Clicked on menu button */
+				Arg a = {0};
+				toggleappmenu(&a);
+				return;
+			}
+			
+			/* Skip separator: | */
+			x = menu_btn_end + cell_width / 2 + cell_width + cell_width / 2;
+			
+			/* Tags region: [1] [2] [3] ... */
+			int tag;
+			for (tag = 0; tag < cfg_tagcount; tag++) {
+				int tag_start = x;
+				int tag_end = x + 3 * cell_width;
+				
+				if (bar_x >= tag_start && bar_x < tag_end) {
+					/* Clicked on this tag */
+					Arg a = {.ui = 1 << tag};
+					view(&a);
+					return;
+				}
+				
+				x += 3 * cell_width + cell_width / 2; /* tag width + gap */
+			}
+			
+			/* Skip separator after tags */
+			x += cell_width / 2 + cell_width * 2;
+			
+			/* Window tabs region */
+			int visible_count = 0;
+			Client *c;
+			wl_list_for_each(c, &clients, link) {
+				if (VISIBLEON(c, selmon))
+					visible_count++;
+			}
+			
+			if (visible_count > 0) {
+				int n = 30 * cell_width; /* reserved for date/time */
+				int tab_area_width = selmon->m.width - x - n;
+				if (tab_area_width < 0) tab_area_width = 0;
+				
+				int max_tab_chars = 20;
+				int tab_width_cells = max_tab_chars + 2;
+				if (visible_count * tab_width_cells * cell_width > tab_area_width) {
+					tab_width_cells = tab_area_width / (visible_count * cell_width);
+					if (tab_width_cells < 5) tab_width_cells = 5;
+				}
+				
+				wl_list_for_each(c, &clients, link) {
+					if (!VISIBLEON(c, selmon))
+						continue;
+					
+					const char *title = client_get_title(c);
+					if (!title) title = "?";
+					
+					int title_max = tab_width_cells - 2;
+					int title_len = strlen(title);
+					int actual_title_chars = (title_len < title_max - 1) ? title_len : title_max - 1;
+					int actual_tab_width = (actual_title_chars + 2) * cell_width;
+					
+					int tab_start = x;
+					int tab_end = x + actual_tab_width;
+					
+					if (bar_x >= tab_start && bar_x < tab_end) {
+						/* Clicked on this tab - focus the window */
+						focusclient(c, 1);
+						return;
+					}
+					
+					x += actual_tab_width;
+				}
+			}
+			
+			/* Click was on bar but not on any interactive element - ignore */
+			return;
+		}
 
 		/* Change focus if the button was _pressed_ over a client */
 		xytonode(cursor->x, cursor->y, NULL, &c, NULL, NULL, NULL);
@@ -989,6 +1288,8 @@ checkidleinhibitor(struct wlr_surface *exclude)
 void
 cleanup(void)
 {
+	int i;
+	
 	cleanuplisteners();
 #ifdef XWAYLAND
 	wlr_xwayland_destroy(xwayland);
@@ -1000,6 +1301,42 @@ cleanup(void)
 		waitpid(child_pid, NULL, 0);
 	}
 	wlr_xcursor_manager_destroy(cursor_mgr);
+
+	/* Clean up glyph cache bitmaps */
+	for (i = 0; i < GLYPH_CACHE_SIZE; i++) {
+		if (glyph_cache[i].bitmap) {
+			free(glyph_cache[i].bitmap);
+			glyph_cache[i].bitmap = NULL;
+		}
+	}
+
+	/* Clean up all monitor bar buffers */
+	Monitor *m;
+	wl_list_for_each(m, &mons, link) {
+		if (m->bar) {
+			wlr_scene_buffer_set_buffer(m->bar, NULL);
+		}
+	}
+
+	/* Clean up app menu buffer */
+	if (appmenu_buffer) {
+		wlr_scene_buffer_set_buffer(appmenu_buffer, NULL);
+	}
+
+	/* Clean up REPL buffer */
+	if (repl_buffer) {
+		wlr_scene_buffer_set_buffer(repl_buffer, NULL);
+	}
+
+	/* Clean up FreeType */
+	if (ft_face) {
+		FT_Done_Face(ft_face);
+		ft_face = NULL;
+	}
+	if (ft_library) {
+		FT_Done_FreeType(ft_library);
+		ft_library = NULL;
+	}
 
 	/* Remove our signal event source and close the descriptor */
 	if (signal_fd_source) {
@@ -1027,6 +1364,16 @@ cleanup(void)
 
 	destroykeyboardgroup(&kb_group->destroy, NULL);
 
+	/* Clean up app cache (launcher autocomplete) */
+	if (app_cache) {
+		for (i = 0; i < app_cache_count; i++) {
+			free(app_cache[i]);
+		}
+		free(app_cache);
+		app_cache = NULL;
+		app_cache_count = 0;
+	}
+
 	/* If it's not destroyed manually, it will cause a use-after-free of wlr_seat.
 	 * Destroy it until it's fixed on the wlroots side */
 	wlr_backend_destroy(backend);
@@ -1043,6 +1390,11 @@ cleanupmon(struct wl_listener *listener, void *data)
 	Monitor *m = wl_container_of(listener, m, destroy);
 	LayerSurface *l, *tmp;
 	size_t i;
+
+	/* Clean up bar buffer */
+	if (m->bar) {
+		wlr_scene_buffer_set_buffer(m->bar, NULL);
+	}
 
 	/* m->layers[i] are intentionally not unlinked */
 	for (i = 0; i < LENGTH(m->layers); i++) {
@@ -1110,6 +1462,15 @@ closemon(Monitor *m)
 	Client *c;
 	int i = 0, nmons = wl_list_length(&mons);
 	tbwm_log(TBWM_LOG_WARN, "closemon: closing monitor %s", m->wlr_output->name);
+
+	/* Release cached bar buffer */
+	if (m->bar_buf) {
+		if (m->bar)
+			wlr_scene_buffer_set_buffer(m->bar, NULL);
+		wlr_buffer_drop(&m->bar_buf->base);
+		m->bar_buf = NULL;
+	}
+
 	if (!nmons) {
 		selmon = NULL;
 	} else if (m == selmon) {
@@ -2721,6 +3082,127 @@ runlauncher(void)
 	}
 }
 
+/* Get total visible items in current menu view */
+static int
+appmenu_item_count(void)
+{
+	if (menu_current_category < 0) {
+		return category_count;
+	} else {
+		/* Count apps in this category + 1 for "Back" */
+		const char *selected_cat = categories[menu_current_category].name;
+		int count = 1; /* Back item */
+		int i;
+		for (i = 0; i < app_entry_count; i++) {
+			if (strcmp(app_entries[i].category, selected_cat) == 0)
+				count++;
+		}
+		return count;
+	}
+}
+
+static int
+appmenukey(xkb_keysym_t sym)
+{
+	int item_count = appmenu_item_count();
+	int content_rows = 23; /* menu_cells_h - 2 */
+	
+	if (sym == XKB_KEY_Escape) {
+		if (menu_current_category >= 0) {
+			/* Go back to categories */
+			menu_current_category = -1;
+			menu_scroll_offset = 0;
+			menu_selected_row = 0;
+			updateappmenu();
+		} else {
+			/* Close menu */
+			appmenu_active = 0;
+			updateappmenu();
+			updatebars();
+		}
+		return 1;
+	}
+	
+	if (sym == XKB_KEY_Up || sym == XKB_KEY_k) {
+		if (menu_selected_row > 0) {
+			menu_selected_row--;
+		} else if (menu_scroll_offset > 0) {
+			menu_scroll_offset--;
+		}
+		updateappmenu();
+		return 1;
+	}
+	
+	if (sym == XKB_KEY_Down || sym == XKB_KEY_j) {
+		int max_row = (item_count < content_rows) ? item_count - 1 : content_rows - 1;
+		if (menu_selected_row < max_row && menu_selected_row + menu_scroll_offset < item_count - 1) {
+			menu_selected_row++;
+		} else if (menu_selected_row + menu_scroll_offset < item_count - 1) {
+			menu_scroll_offset++;
+		}
+		updateappmenu();
+		return 1;
+	}
+	
+	if (sym == XKB_KEY_Return || sym == XKB_KEY_Right || sym == XKB_KEY_l) {
+		int selected_idx = menu_selected_row + menu_scroll_offset;
+		
+		if (menu_current_category < 0) {
+			/* Select a category */
+			if (selected_idx < category_count) {
+				menu_current_category = selected_idx;
+				menu_scroll_offset = 0;
+				menu_selected_row = 0;
+				updateappmenu();
+			}
+		} else {
+			/* In apps view */
+			if (selected_idx == 0) {
+				/* Back */
+				menu_current_category = -1;
+				menu_scroll_offset = 0;
+				menu_selected_row = 0;
+				updateappmenu();
+			} else {
+				/* Launch app */
+				const char *selected_cat = categories[menu_current_category].name;
+				int app_idx = 0;
+				int target = selected_idx - 1; /* -1 for Back row */
+				int i;
+				
+				for (i = 0; i < app_entry_count; i++) {
+					if (strcmp(app_entries[i].category, selected_cat) == 0) {
+						if (app_idx == target) {
+							Arg a = { .v = (const char*[]){ "/bin/sh", "-c", app_entries[i].exec, NULL } };
+							spawn(&a);
+							appmenu_active = 0;
+							updateappmenu();
+							updatebars();
+							return 1;
+						}
+						app_idx++;
+					}
+				}
+			}
+		}
+		return 1;
+	}
+	
+	if (sym == XKB_KEY_Left || sym == XKB_KEY_h || sym == XKB_KEY_BackSpace) {
+		if (menu_current_category >= 0) {
+			/* Go back to categories */
+			menu_current_category = -1;
+			menu_scroll_offset = 0;
+			menu_selected_row = 0;
+			updateappmenu();
+		}
+		return 1;
+	}
+	
+	/* Don't consume unhandled keys - allows M-x toggle to work */
+	return 0;
+}
+
 static int
 launcherkey(xkb_keysym_t sym)
 {
@@ -2803,6 +3285,11 @@ keybinding(uint32_t mods, xkb_keysym_t sym)
 	/* Handle REPL input mode */
 	if (repl_input_active)
 		return replkey(sym);
+
+	/* Handle app menu navigation - if appmenukey handles it, return 1;
+	 * otherwise fall through to check scheme bindings (e.g., M-x to toggle) */
+	if (appmenu_active && appmenukey(sym))
+		return 1;
 
 	/*
 	 * Fallback: some keyboards or keymaps produce plain F1..F12 for Ctrl+Alt+Fx
@@ -3192,6 +3679,29 @@ motionnotify(uint32_t time, struct wlr_input_device *device, double dx, double d
 		/* Update selmon (even while dragging a window) */
 		if (sloppyfocus)
 			selmon = xytomon(cursor->x, cursor->y);
+		
+		/* Update menu hover selection */
+		if (appmenu_active && selmon) {
+			int menu_x = selmon->m.x;
+			int menu_y = selmon->m.y + cell_height;
+			int menu_w = 25 * cell_width;
+			int menu_h = 25 * cell_height;
+			
+			if (cursor->x >= menu_x && cursor->x < menu_x + menu_w &&
+			    cursor->y >= menu_y && cursor->y < menu_y + menu_h) {
+				int rel_y = (int)(cursor->y - menu_y);
+				int hovered_row = rel_y / cell_height;
+				
+				/* Row 0 is title bar, rows 1-23 are content */
+				if (hovered_row >= 1 && hovered_row <= 23) {
+					int new_selected = hovered_row - 1; /* 0-indexed content row */
+					if (new_selected != menu_selected_row) {
+						menu_selected_row = new_selected;
+						updateappmenu();
+					}
+				}
+			}
+		}
 	}
 
 	/* Update drag icon's position */
@@ -4160,37 +4670,6 @@ spawn(const Arg *arg)
 	}
 }
 
-/* Text buffer for title bars */
-struct TitleBuffer {
-	struct wlr_buffer base;
-	void *data;
-	int stride;
-};
-
-static void titlebuf_destroy(struct wlr_buffer *buf) {
-	struct TitleBuffer *tb = wl_container_of(buf, tb, base);
-	free(tb->data);
-	free(tb);
-}
-
-static bool titlebuf_begin_data_ptr_access(struct wlr_buffer *buf,
-		uint32_t flags, void **data, uint32_t *format, size_t *stride) {
-	struct TitleBuffer *tb = wl_container_of(buf, tb, base);
-	*data = tb->data;
-	*format = DRM_FORMAT_ARGB8888;
-	*stride = tb->stride;
-	return true;
-}
-
-static void titlebuf_end_data_ptr_access(struct wlr_buffer *buf) {
-}
-
-static const struct wlr_buffer_impl titlebuf_impl = {
-	.destroy = titlebuf_destroy,
-	.begin_data_ptr_access = titlebuf_begin_data_ptr_access,
-	.end_data_ptr_access = titlebuf_end_data_ptr_access,
-};
-
 void
 setupgrid(void)
 {
@@ -4800,21 +5279,6 @@ int check_scheme_bindings(uint32_t mods, xkb_keysym_t sym)
 
 /* ==================== SCHEME CONFIG SETTERS ==================== */
 
-/* Helper: parse hex color string "#RRGGBB" or "#AARRGGBB" to float[4] */
-static void parse_color(const char *str, float *out) {
-	unsigned int r = 0, g = 0, b = 0, a = 255;
-	if (str[0] == '#') str++;
-	if (strlen(str) == 8) {
-		sscanf(str, "%02x%02x%02x%02x", &a, &r, &g, &b);
-	} else if (strlen(str) == 6) {
-		sscanf(str, "%02x%02x%02x", &r, &g, &b);
-	}
-	out[0] = r / 255.0f;
-	out[1] = g / 255.0f;
-	out[2] = b / 255.0f;
-	out[3] = a / 255.0f;
-}
-
 /* Helper: parse hex color #RRGGBB to uint32_t (no alpha) */
 static uint32_t parse_color_rgb(const char *str) {
 	unsigned int r = 0, g = 0, b = 0;
@@ -4891,6 +5355,37 @@ static s7_pointer scm_set_bar_color(s7_scheme *sc, s7_pointer args) {
 static s7_pointer scm_set_bar_text_color(s7_scheme *sc, s7_pointer args) {
 	if (!s7_is_string(s7_car(args))) return s7_f(sc);
 	cfg_bar_text_color = parse_color_rgb(s7_string(s7_car(args)));
+	updatebars();
+	return s7_t(sc);
+}
+
+/* Scheme: (set-menu-color "#RRGGBB") - app menu background */
+static s7_pointer scm_set_menu_color(s7_scheme *sc, s7_pointer args) {
+	if (!s7_is_string(s7_car(args))) return s7_f(sc);
+	cfg_menu_color = parse_color_rgb(s7_string(s7_car(args)));
+	updateappmenu();
+	return s7_t(sc);
+}
+
+/* Scheme: (set-menu-text-color "#RRGGBB") - app menu text */
+static s7_pointer scm_set_menu_text_color(s7_scheme *sc, s7_pointer args) {
+	if (!s7_is_string(s7_car(args))) return s7_f(sc);
+	cfg_menu_text_color = parse_color_rgb(s7_string(s7_car(args)));
+	updateappmenu();
+	return s7_t(sc);
+}
+
+/* Scheme: (toggle-appmenu) - toggle app menu visibility */
+static s7_pointer scm_toggle_appmenu(s7_scheme *sc, s7_pointer args) {
+	toggleappmenu(NULL);
+	return s7_t(sc);
+}
+
+/* Scheme: (set-menu-button "text") - set the app menu button label */
+static s7_pointer scm_set_menu_button(s7_scheme *sc, s7_pointer args) {
+	if (!s7_is_string(s7_car(args))) return s7_f(sc);
+	strncpy(cfg_menu_button, s7_string(s7_car(args)), sizeof(cfg_menu_button) - 1);
+	cfg_menu_button[sizeof(cfg_menu_button) - 1] = '\0';
 	updatebars();
 	return s7_t(sc);
 }
@@ -5136,6 +5631,17 @@ static s7_pointer scm_clear_mouse_bindings(s7_scheme *sc, s7_pointer args) {
 	return s7_t(sc);
 }
 
+/* Scheme: (buffer-stats) - return buffer allocation stats for debugging */
+static s7_pointer scm_buffer_stats(s7_scheme *sc, s7_pointer args) {
+	char buf[512];
+	int buf_leaked = titlebuf_alloc_count - titlebuf_free_count;
+	int glyph_leaked = glyph_malloc_count - glyph_free_count;
+	snprintf(buf, sizeof(buf), "buf: alloc=%d free=%d leaked=%d | glyph: malloc=%d free=%d leaked=%d bytes=%zu", 
+	         titlebuf_alloc_count, titlebuf_free_count, buf_leaked,
+	         glyph_malloc_count, glyph_free_count, glyph_leaked, glyph_total_bytes);
+	return s7_make_string(sc, buf);
+}
+
 /* ==================== END SCHEME CONFIG SETTERS ====================  */
 
 void
@@ -5198,12 +5704,17 @@ setup_scheme(void)
 	s7_define_function(sc, "set-bar-text-color", scm_set_bar_text_color, 1, 0, false, "(set-bar-text-color \"#RRGGBB\") set status bar text color");
 	s7_define_function(sc, "set-border-color", scm_set_border_color, 1, 0, false, "(set-border-color \"#RRGGBB\") set window highlight/border background color");
 	s7_define_function(sc, "set-border-line-color", scm_set_border_line_color, 1, 0, false, "(set-border-line-color \"#RRGGBB\") set box-drawing border line color");
+	s7_define_function(sc, "set-menu-color", scm_set_menu_color, 1, 0, false, "(set-menu-color \"#RRGGBB\") set app menu background color");
+	s7_define_function(sc, "set-menu-text-color", scm_set_menu_text_color, 1, 0, false, "(set-menu-text-color \"#RRGGBB\") set app menu text color");
+	s7_define_function(sc, "set-menu-button", scm_set_menu_button, 1, 0, false, "(set-menu-button \"text\") set app menu button label in bar");
+	s7_define_function(sc, "toggle-appmenu", scm_toggle_appmenu, 0, 0, false, "(toggle-appmenu) toggle the app menu visibility");
 	s7_define_function(sc, "set-tag-count", scm_set_tag_count, 1, 0, false, "(set-tag-count n) set number of virtual desktops (1-9)");
 	s7_define_function(sc, "set-show-time", scm_set_show_time, 1, 0, false, "(set-show-time b) show/hide time in status bar");
 	s7_define_function(sc, "set-show-date", scm_set_show_date, 1, 0, false, "(set-show-date b) show/hide date in status bar");
 	s7_define_function(sc, "set-status-text", scm_set_status_text, 1, 0, false, "(set-status-text \"text\") custom status text (replaces date/time)");
 	s7_define_function(sc, "set-sloppy-focus", scm_set_sloppy_focus, 1, 0, false, "(set-sloppy-focus b) enable/disable focus follows mouse");
 	s7_define_function(sc, "on-startup", scm_on_startup, 0, 0, true, "(on-startup cmd1 cmd2 ...) register commands to run on startup");
+	s7_define_function(sc, "buffer-stats", scm_buffer_stats, 0, 0, false, "(buffer-stats) show buffer alloc/free counts for leak detection");
 	
 	/* Font and input */
 	s7_define_function(sc, "set-font", scm_set_font, 2, 0, false, "(set-font path size) set grid font");
@@ -5312,6 +5823,9 @@ static const char *default_config_parts[] = {
 ";; Launcher\n"
 "(bind-key \"M-d\" (lambda () (toggle-launcher)))\n"
 "\n"
+";; App menu\n"
+"(bind-key \"M-x\" (lambda () (toggle-appmenu)))\n"
+"\n"
 ";; Close window\n"
 "(bind-key \"M-q\" (lambda () (kill-client)))\n"
 "\n"
@@ -5372,6 +5886,16 @@ static const char *default_config_parts[] = {
 ";; Reload config (hot reload!)\n"
 "(bind-key \"M-S-c\" (lambda () (reload-config) (log \"Config reloaded!\")))\n"
 "\n"
+";; Screenshots (requires grim, slurp, wl-copy)\n"
+"(bind-key \"Print\" (lambda () (spawn \"sh -c 'grim - | wl-copy'\")))\n"
+"(bind-key \"S-Print\" (lambda () (spawn \"sh -c 'grim -g \\\"$(slurp)\\\" - | wl-copy'\")))\n"
+"\n"
+";; Volume control (requires wpctl/wireplumber)\n"
+"(bind-key \"XF86AudioRaiseVolume\" (lambda () (spawn \"wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+\")))\n"
+"(bind-key \"XF86AudioLowerVolume\" (lambda () (spawn \"wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-\")))\n"
+"(bind-key \"XF86AudioMute\" (lambda () (spawn \"wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle\")))\n"
+"(bind-key \"XF86AudioMicMute\" (lambda () (spawn \"wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle\")))\n"
+"\n"
 ";; REPL - Scheme console on the desktop\n"
 ";; Super+Shift+; (Win+:) to open, Escape to close\n"
 "(bind-key \"M-S-colon\" (lambda () (toggle-repl)))\n"
@@ -5394,6 +5918,7 @@ static const char *default_config_parts[] = {
 ";; Control and window management\n"
 "(bind-key \"M-Return\" (lambda () (spawn \"foot\")))\n"
 "(bind-key \"M-d\" (lambda () (toggle-launcher)))\n"
+"(bind-key \"M-x\" (lambda () (toggle-appmenu)))\n"
 "(bind-key \"M-q\" (lambda () (kill-client)))\n"
 "(bind-key \"M-S-e\" (lambda () (quit)))\n"
 "\n"
@@ -5715,7 +6240,10 @@ bartimer(void *data)
 int
 scrolltimer(void *data)
 {
-	/* Handle smooth scrolling for both bar tabs and window titlebars */
+	Client *c;
+	int scroll_count = 0;
+	
+	/* Handle smooth scrolling for window titlebars only */
 	if (!title_scroll_mode || !any_title_needs_scroll) {
 		/* No scrolling needed, check again later */
 		wl_event_source_timer_update(scroll_timer, 100);
@@ -5725,9 +6253,17 @@ scrolltimer(void *data)
 	/* Advance scroll offset (~1 pixel per 33ms at speed 30) */
 	title_scroll_offset += 1;
 	
-	/* Update bar and frames */
-	updatebars();
-	updateframes();
+	/* Only update windows that actually need scrolling */
+	wl_list_for_each(c, &clients, link) {
+		if (c->needs_title_scroll) {
+			updateframe(c);
+			scroll_count++;
+		}
+	}
+	
+	/* If no windows needed scrolling, reset the flag */
+	if (scroll_count == 0)
+		any_title_needs_scroll = 0;
 	
 	/* Continue at 30fps */
 	wl_event_source_timer_update(scroll_timer, 33);
@@ -5777,6 +6313,420 @@ togglerepl(const Arg *arg)
 	updaterepl();
 }
 
+/* Map freedesktop category to simplified category */
+static const char *
+map_category(const char *cats)
+{
+	if (!cats) return "Other";
+	if (strstr(cats, "AudioVideo") || strstr(cats, "Audio") || strstr(cats, "Video"))
+		return "Multimedia";
+	if (strstr(cats, "Development") || strstr(cats, "IDE"))
+		return "Development";
+	if (strstr(cats, "Game"))
+		return "Games";
+	if (strstr(cats, "Graphics"))
+		return "Graphics";
+	if (strstr(cats, "Network") || strstr(cats, "WebBrowser") || strstr(cats, "Email"))
+		return "Internet";
+	if (strstr(cats, "Office") || strstr(cats, "WordProcessor") || strstr(cats, "Spreadsheet"))
+		return "Office";
+	if (strstr(cats, "Settings") || strstr(cats, "System") || strstr(cats, "Monitor"))
+		return "System";
+	if (strstr(cats, "Utility") || strstr(cats, "Accessibility"))
+		return "Accessories";
+	if (strstr(cats, "Education") || strstr(cats, "Science"))
+		return "Education";
+	return "Other";
+}
+
+/* Find or create category, returns index */
+static int
+find_or_create_category(const char *name)
+{
+	int i;
+	for (i = 0; i < category_count; i++) {
+		if (strcmp(categories[i].name, name) == 0)
+			return i;
+	}
+	if (category_count < MAX_CATEGORIES) {
+		strncpy(categories[category_count].name, name, CAT_NAME_LEN - 1);
+		categories[category_count].name[CAT_NAME_LEN - 1] = '\0';
+		categories[category_count].app_count = 0;
+		return category_count++;
+	}
+	return -1;
+}
+
+/* Parse a single .desktop file */
+static void
+parse_desktop_file(const char *path)
+{
+	FILE *f;
+	char line[512];
+	char name[APP_NAME_LEN] = "";
+	char exec[APP_EXEC_LEN] = "";
+	char cats[256] = "";
+	int nodisplay = 0;
+	int in_desktop_entry = 0;
+	
+	f = fopen(path, "r");
+	if (!f) return;
+	
+	while (fgets(line, sizeof(line), f)) {
+		/* Remove newline */
+		line[strcspn(line, "\n")] = 0;
+		
+		if (strcmp(line, "[Desktop Entry]") == 0) {
+			in_desktop_entry = 1;
+			continue;
+		}
+		if (line[0] == '[') {
+			in_desktop_entry = 0;
+			continue;
+		}
+		if (!in_desktop_entry) continue;
+		
+		if (strncmp(line, "Name=", 5) == 0 && name[0] == '\0') {
+			strncpy(name, line + 5, APP_NAME_LEN - 1);
+			name[APP_NAME_LEN - 1] = '\0';
+		} else if (strncmp(line, "Exec=", 5) == 0) {
+			/* Copy exec, removing %f %F %u %U etc */
+			char *src = line + 5;
+			char *dst = exec;
+			char *end = exec + APP_EXEC_LEN - 1;
+			while (*src && dst < end) {
+				if (*src == '%' && src[1]) {
+					src += 2; /* skip %X */
+				} else {
+					*dst++ = *src++;
+				}
+			}
+			*dst = '\0';
+			/* Trim trailing spaces */
+			while (dst > exec && dst[-1] == ' ') *--dst = '\0';
+		} else if (strncmp(line, "Categories=", 11) == 0) {
+			strncpy(cats, line + 11, sizeof(cats) - 1);
+			cats[sizeof(cats) - 1] = '\0';
+		} else if (strncmp(line, "NoDisplay=true", 14) == 0) {
+			nodisplay = 1;
+		} else if (strncmp(line, "Hidden=true", 11) == 0) {
+			nodisplay = 1;
+		}
+	}
+	fclose(f);
+	
+	/* Add to list if valid */
+	if (name[0] && exec[0] && !nodisplay && app_entry_count < MAX_APPS) {
+		const char *cat = map_category(cats);
+		int cat_idx = find_or_create_category(cat);
+		
+		strncpy(app_entries[app_entry_count].name, name, APP_NAME_LEN - 1);
+		app_entries[app_entry_count].name[APP_NAME_LEN - 1] = '\0';
+		strncpy(app_entries[app_entry_count].exec, exec, APP_EXEC_LEN - 1);
+		app_entries[app_entry_count].exec[APP_EXEC_LEN - 1] = '\0';
+		strncpy(app_entries[app_entry_count].category, cat, CAT_NAME_LEN - 1);
+		app_entries[app_entry_count].category[CAT_NAME_LEN - 1] = '\0';
+		
+		if (cat_idx >= 0)
+			categories[cat_idx].app_count++;
+		
+		app_entry_count++;
+	}
+}
+
+/* Scan directory for .desktop files */
+static void
+scan_desktop_dir(const char *dir)
+{
+	DIR *d;
+	struct dirent *entry;
+	char path[512];
+	
+	d = opendir(dir);
+	if (!d) return;
+	
+	while ((entry = readdir(d)) != NULL) {
+		int len = strlen(entry->d_name);
+		if (len > 8 && strcmp(entry->d_name + len - 8, ".desktop") == 0) {
+			snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name);
+			parse_desktop_file(path);
+		}
+	}
+	closedir(d);
+}
+
+/* Compare apps by name for sorting */
+static int
+appentry_compare(const void *a, const void *b)
+{
+	return strcasecmp(((AppEntry*)a)->name, ((AppEntry*)b)->name);
+}
+
+/* Compare categories by name for sorting */
+static int
+cat_compare(const void *a, const void *b)
+{
+	return strcasecmp(((CategoryEntry*)a)->name, ((CategoryEntry*)b)->name);
+}
+
+/* Load all applications from .desktop files */
+static void
+load_applications(void)
+{
+	char *home;
+	char local_apps[256];
+	
+	if (apps_loaded) return;
+	
+	app_entry_count = 0;
+	category_count = 0;
+	
+	/* Scan system applications */
+	scan_desktop_dir("/usr/share/applications");
+	scan_desktop_dir("/usr/local/share/applications");
+	
+	/* Scan user applications */
+	home = getenv("HOME");
+	if (home) {
+		snprintf(local_apps, sizeof(local_apps), "%s/.local/share/applications", home);
+		scan_desktop_dir(local_apps);
+	}
+	
+	/* Sort apps and categories */
+	qsort(app_entries, app_entry_count, sizeof(AppEntry), appentry_compare);
+	qsort(categories, category_count, sizeof(CategoryEntry), cat_compare);
+	
+	apps_loaded = 1;
+	tbwm_log(TBWM_LOG_INFO, "Loaded %d applications in %d categories", app_entry_count, category_count);
+}
+
+void
+toggleappmenu(const Arg *arg)
+{
+	appmenu_active = !appmenu_active;
+	if (appmenu_active) {
+		load_applications();
+		menu_current_category = -1;
+		menu_scroll_offset = 0;
+		menu_selected_row = 0;
+	}
+	updateappmenu();
+	updatebars();
+}
+
+void
+updateappmenu(void)
+{
+	struct TitleBuffer *tb;
+	uint32_t *pixels;
+	int menu_cells_w = 25;
+	int menu_cells_h = 25;
+	int menu_width = menu_cells_w * cell_width;
+	int menu_height = menu_cells_h * cell_height;
+	int i, x, y, row, col;
+	uint32_t frame_bg = RGB_TO_ARGB(cfg_border_color);
+	uint32_t line_color = RGB_TO_ARGB(cfg_border_line_color);
+	uint32_t content_bg = RGB_TO_ARGB(cfg_menu_color);
+	uint32_t text_color = RGB_TO_ARGB(cfg_menu_text_color);
+	
+	/* If menu is not active, hide the buffer and return */
+	if (!appmenu_active) {
+		if (appmenu_buffer) {
+			wlr_scene_node_set_enabled(&appmenu_buffer->node, 0);
+		}
+		return;
+	}
+	
+	/* Create buffer */
+	tb = ecalloc(1, sizeof(*tb));
+	tb->stride = menu_width * 4;
+	tb->data = ecalloc(1, tb->stride * menu_height);
+	titlebuf_alloc_count++; wlr_buffer_init(&tb->base, &titlebuf_impl, menu_width, menu_height);
+	pixels = tb->data;
+	
+	/* Fill entire background with content color first */
+	for (i = 0; i < menu_width * menu_height; i++) {
+		pixels[i] = content_bg;
+	}
+	
+	/* Draw frame background for border cells (top row, bottom row, left col, right col) */
+	/* Top row */
+	for (y = 0; y < cell_height; y++) {
+		for (x = 0; x < menu_width; x++) {
+			pixels[y * menu_width + x] = frame_bg;
+		}
+	}
+	/* Bottom row */
+	for (y = (menu_cells_h - 1) * cell_height; y < menu_height; y++) {
+		for (x = 0; x < menu_width; x++) {
+			pixels[y * menu_width + x] = frame_bg;
+		}
+	}
+	/* Left column */
+	for (y = 0; y < menu_height; y++) {
+		for (x = 0; x < cell_width; x++) {
+			pixels[y * menu_width + x] = frame_bg;
+		}
+	}
+	/* Right column */
+	for (y = 0; y < menu_height; y++) {
+		for (x = (menu_cells_w - 1) * cell_width; x < menu_width; x++) {
+			pixels[y * menu_width + x] = frame_bg;
+		}
+	}
+	
+	/* Draw box-drawing characters for the frame */
+	/* Top-left corner ╔ */
+	render_char_to_buffer(pixels, menu_width, menu_height, 0, 0, 0x2554, line_color);
+	/* Top-right corner ╗ */
+	render_char_to_buffer(pixels, menu_width, menu_height, (menu_cells_w - 1) * cell_width, 0, 0x2557, line_color);
+	/* Bottom-left corner ╚ */
+	render_char_to_buffer(pixels, menu_width, menu_height, 0, (menu_cells_h - 1) * cell_height, 0x255A, line_color);
+	/* Bottom-right corner ╝ */
+	render_char_to_buffer(pixels, menu_width, menu_height, (menu_cells_w - 1) * cell_width, (menu_cells_h - 1) * cell_height, 0x255D, line_color);
+	
+	/* Top edge ═ with title "Menu" */
+	{
+		const char *title = "Menu";
+		int title_len = strlen(title);
+		int title_start = 2; /* start after ╔═ */
+		for (col = 1; col < menu_cells_w - 1; col++) {
+			if (col >= title_start && col < title_start + title_len) {
+				render_char_to_buffer(pixels, menu_width, menu_height, col * cell_width, 0, title[col - title_start], line_color);
+			} else {
+				render_char_to_buffer(pixels, menu_width, menu_height, col * cell_width, 0, 0x2550, line_color);
+			}
+		}
+	}
+	/* Bottom edge ═ */
+	for (col = 1; col < menu_cells_w - 1; col++) {
+		render_char_to_buffer(pixels, menu_width, menu_height, col * cell_width, (menu_cells_h - 1) * cell_height, 0x2550, line_color);
+	}
+	/* Left edge ║ */
+	for (row = 1; row < menu_cells_h - 1; row++) {
+		render_char_to_buffer(pixels, menu_width, menu_height, 0, row * cell_height, 0x2551, line_color);
+	}
+	/* Right edge ║ */
+	for (row = 1; row < menu_cells_h - 1; row++) {
+		render_char_to_buffer(pixels, menu_width, menu_height, (menu_cells_w - 1) * cell_width, row * cell_height, 0x2551, line_color);
+	}
+	
+	/* Draw content: categories or apps */
+	{
+		int content_rows = menu_cells_h - 2; /* rows available for content */
+		int max_text_len = menu_cells_w - 2; /* space for text (minus borders) */
+		uint32_t highlight_bg = RGB_TO_ARGB(cfg_border_color); /* blue highlight */
+		uint32_t highlight_fg = RGB_TO_ARGB(cfg_border_line_color); /* grey text on blue */
+		
+		if (menu_current_category < 0) {
+			/* Show categories */
+			for (row = 0; row < content_rows && row + menu_scroll_offset < category_count; row++) {
+				int item_idx = row + menu_scroll_offset;
+				int text_y = (row + 1) * cell_height;
+				int text_x = cell_width; /* 1 cell from left */
+				const char *cat_name = categories[item_idx].name;
+				int ci;
+				int is_selected = (row == menu_selected_row);
+				uint32_t row_fg = is_selected ? highlight_fg : text_color;
+				
+				/* Highlight background if selected */
+				if (is_selected) {
+					int px, py;
+					for (py = text_y; py < text_y + cell_height; py++) {
+						for (px = cell_width; px < menu_width - cell_width; px++) {
+							pixels[py * menu_width + px] = highlight_bg;
+						}
+					}
+				}
+				
+				/* Draw category name */
+				for (ci = 0; cat_name[ci] && ci < max_text_len; ci++) {
+					render_char_to_buffer(pixels, menu_width, menu_height,
+						text_x + ci * cell_width, text_y,
+						cat_name[ci], row_fg);
+				}
+			}
+		} else {
+			/* Show apps in selected category */
+			const char *selected_cat = categories[menu_current_category].name;
+			int app_idx = 0;
+			int displayed = 0;
+			int is_selected;
+			uint32_t row_fg;
+			
+			/* First row: "< Back" */
+			is_selected = (menu_selected_row == 0);
+			row_fg = is_selected ? highlight_fg : text_color;
+			{
+				int text_y = cell_height;
+				const char *back = "< Back";
+				int bi;
+				
+				if (is_selected) {
+					int px, py;
+					for (py = text_y; py < text_y + cell_height; py++) {
+						for (px = cell_width; px < menu_width - cell_width; px++) {
+							pixels[py * menu_width + px] = highlight_bg;
+						}
+					}
+				}
+				
+				for (bi = 0; back[bi] && bi < max_text_len; bi++) {
+					render_char_to_buffer(pixels, menu_width, menu_height,
+						cell_width + bi * cell_width, text_y,
+						back[bi], row_fg);
+				}
+			}
+			
+			/* Show apps in this category */
+			for (i = 0; i < app_entry_count && displayed < content_rows - 1; i++) {
+				if (strcmp(app_entries[i].category, selected_cat) == 0) {
+					if (app_idx >= menu_scroll_offset) {
+						int text_y = (displayed + 2) * cell_height;
+						int text_x = cell_width;
+						const char *app_name = app_entries[i].name;
+						int ai;
+						
+						is_selected = (displayed + 1 == menu_selected_row);
+						row_fg = is_selected ? highlight_fg : text_color;
+						
+						if (is_selected) {
+							int px, py;
+							for (py = text_y; py < text_y + cell_height; py++) {
+								for (px = cell_width; px < menu_width - cell_width; px++) {
+									pixels[py * menu_width + px] = highlight_bg;
+								}
+							}
+						}
+						
+						/* Draw app name */
+						for (ai = 0; app_name[ai] && ai < max_text_len; ai++) {
+							render_char_to_buffer(pixels, menu_width, menu_height,
+								text_x + ai * cell_width, text_y,
+								app_name[ai], row_fg);
+						}
+						displayed++;
+					}
+					app_idx++;
+				}
+			}
+		}
+	}
+	
+	/* Create or update the appmenu buffer */
+	if (!appmenu_buffer)
+		appmenu_buffer = wlr_scene_buffer_create(layers[LyrTop], NULL);
+	wlr_scene_node_set_enabled(&appmenu_buffer->node, 1);
+	/* Position at top-left of focused monitor, below the bar */
+	if (selmon) {
+		wlr_scene_node_set_position(&appmenu_buffer->node, selmon->m.x, selmon->m.y + cell_height);
+	} else {
+		wlr_scene_node_set_position(&appmenu_buffer->node, sgeom.x, sgeom.y + cell_height);
+	}
+	wlr_scene_buffer_set_buffer(appmenu_buffer, &tb->base);
+	wlr_buffer_drop(&tb->base);
+}
+
 /* Key helper: reload configuration (wrapper so we can bind it in C defaults) */
 void
 reload_config_key(const Arg *arg)
@@ -5804,11 +6754,6 @@ repl_add_line(const char *line)
 	repl_scroll_offset = 0;
 	updaterepl();
 }
-
-#define TBWM_LOG_DEBUG 0
-#define TBWM_LOG_INFO 1
-#define TBWM_LOG_WARN 2
-#define TBWM_LOG_ERROR 3
 
 void
 tbwm_log(int level, const char *fmt, ...)
@@ -5957,7 +6902,7 @@ updaterepl(void)
 	tb = ecalloc(1, sizeof(*tb));
 	tb->stride = width * 4;
 	tb->data = ecalloc(1, tb->stride * height);
-	wlr_buffer_init(&tb->base, &titlebuf_impl, width, height);
+	titlebuf_alloc_count++; wlr_buffer_init(&tb->base, &titlebuf_impl, width, height);
 	pixels = tb->data;
 	
 	/* Fill with background color */
@@ -6010,7 +6955,7 @@ updatebar(Monitor *m)
 	struct TitleBuffer *tb;
 	uint32_t *pixels;
 	uint32_t bg, fg;
-	int width, i, x, tag, occupied, n, j;
+	int width, i, x, tag, n, j;
 	int py, px, is_focused, title_max, title_len, date_len, time_len, right_x;
 	int len, fits, shown;
 	time_t now;
@@ -6033,11 +6978,24 @@ updatebar(Monitor *m)
 	if (width <= 0)
 		return;
 
-	/* Create buffer */
-	tb = ecalloc(1, sizeof(*tb));
-	tb->stride = width * 4;
-	tb->data = ecalloc(1, tb->stride * cell_height);
-	wlr_buffer_init(&tb->base, &titlebuf_impl, width, cell_height);
+	/* Check if width changed - need to reallocate buffer */
+	if (m->bar_buf && width != m->bar_width) {
+		if (m->bar)
+			wlr_scene_buffer_set_buffer(m->bar, NULL);
+		wlr_buffer_drop(&m->bar_buf->base);
+		m->bar_buf = NULL;
+	}
+	m->bar_width = width;
+
+	/* Reuse buffer if available, otherwise allocate new */
+	if (!m->bar_buf) {
+		m->bar_buf = ecalloc(1, sizeof(*m->bar_buf));
+		m->bar_buf->stride = width * 4;
+		m->bar_buf->data = ecalloc(1, m->bar_buf->stride * cell_height);
+		wlr_buffer_init(&m->bar_buf->base, &titlebuf_impl, width, cell_height);
+		titlebuf_alloc_count++;
+	}
+	tb = m->bar_buf;
 	pixels = tb->data;
 
 	/* Fill background */
@@ -6116,17 +7074,41 @@ updatebar(Monitor *m)
 		}
 	} else {
 		/* === STATUS BAR MODE === */
+		/* App menu button [X] */
+		{
+			int btn_len = strlen(cfg_menu_button);
+			int btn_cells = btn_len + 2; /* [btn] */
+			if (appmenu_active) {
+				bg = RGB_TO_ARGB(cfg_bar_text_color);
+				fg = RGB_TO_ARGB(cfg_bar_color);
+				for (py = 0; py < cell_height; py++) {
+					for (px = x; px < x + btn_cells * cell_width && px < width; px++) {
+						pixels[py * width + px] = bg;
+					}
+				}
+			} else {
+				fg = RGB_TO_ARGB(cfg_bar_text_color);
+			}
+		}
+		render_char_to_buffer(pixels, width, cell_height, x, 0, '[', fg);
+		x += cell_width;
+		{
+			int bi;
+			for (bi = 0; cfg_menu_button[bi] && bi < 14; bi++) {
+				render_char_to_buffer(pixels, width, cell_height, x, 0, cfg_menu_button[bi], fg);
+				x += cell_width;
+			}
+		}
+		render_char_to_buffer(pixels, width, cell_height, x, 0, ']', fg);
+		x += cell_width;
+		
+		/* Separator */
+		x += cell_width / 2;
+		render_char_to_buffer(pixels, width, cell_height, x, 0, '|', RGB_TO_ARGB(cfg_bar_text_color));
+		x += cell_width + cell_width / 2;
+
 		/* Tags [1] [2] [3] ... - use cfg_tagcount */
 		for (tag = 0; tag < cfg_tagcount; tag++) {
-			/* Check if tag is occupied */
-			occupied = 0;
-			wl_list_for_each(c, &clients, link) {
-				if (c->mon == m && (c->tags & (1 << tag))) {
-					occupied = 1;
-					break;
-				}
-			}
-
 			bg = RGB_TO_ARGB(cfg_bar_color);
 			fg = RGB_TO_ARGB(cfg_bar_text_color);
 
@@ -6162,7 +7144,7 @@ updatebar(Monitor *m)
 		/* Window tabs */
 		visible_count = 0;
 		wl_list_for_each(c, &clients, link) {
-			if (VISIBLEON(c, m) && !c->isfloating)
+			if (VISIBLEON(c, m))
 				visible_count++;
 		}
 
@@ -6181,7 +7163,7 @@ updatebar(Monitor *m)
 			}
 
 			wl_list_for_each(c, &clients, link) {
-				if (!VISIBLEON(c, m) || c->isfloating)
+				if (!VISIBLEON(c, m))
 					continue;
 				if (x >= width - n)
 					break;
@@ -6347,7 +7329,7 @@ updatebar(Monitor *m)
 		m->bar = wlr_scene_buffer_create(layers[LyrTop], NULL);
 	wlr_scene_node_set_position(&m->bar->node, m->m.x, m->m.y);
 	wlr_scene_buffer_set_buffer(m->bar, &tb->base);
-	wlr_buffer_drop(&tb->base);
+	/* Don't drop - we're caching the buffer for reuse */
 }
 
 /* Check if there's an adjacent tiled window in the given direction.
@@ -6447,33 +7429,96 @@ utf8_decode(const char *s, int *pos)
 	return cp;
 }
 
+/* Get a cached glyph, loading and caching if necessary */
+static CachedGlyph *
+get_cached_glyph(unsigned long charcode)
+{
+	int start_idx = charcode % GLYPH_CACHE_SIZE;
+	int idx = start_idx;
+	int empty_slot = -1;
+	CachedGlyph *cg;
+	FT_GlyphSlot slot;
+	int size;
+
+	/* Linear probing to find existing entry or empty slot */
+	do {
+		cg = &glyph_cache[idx];
+		if (!cg->valid) {
+			/* Found an empty slot - remember it for insertion */
+			if (empty_slot < 0)
+				empty_slot = idx;
+		} else if (cg->charcode == charcode) {
+			/* Found cached glyph */
+			return cg;
+		}
+		idx = (idx + 1) % GLYPH_CACHE_SIZE;
+	} while (idx != start_idx);
+
+	/* Not found - use empty slot or evict at start position */
+	idx = (empty_slot >= 0) ? empty_slot : start_idx;
+	cg = &glyph_cache[idx];
+
+	/* Need to load this glyph */
+	if (FT_Load_Char(ft_face, charcode, FT_LOAD_RENDER)) {
+		if (charcode != '?' && FT_Load_Char(ft_face, '?', FT_LOAD_RENDER))
+			return NULL;
+	}
+
+	slot = ft_face->glyph;
+
+	/* Free old bitmap if present */
+	if (cg->bitmap) {
+		free(cg->bitmap);
+		cg->bitmap = NULL;
+		glyph_free_count++;
+	}
+
+	/* Cache the glyph data */
+	cg->charcode = charcode;
+	cg->width = slot->bitmap.width;
+	cg->rows = slot->bitmap.rows;
+	cg->pitch = slot->bitmap.pitch;
+	cg->bitmap_left = slot->bitmap_left;
+	cg->bitmap_top = slot->bitmap_top;
+
+	/* Copy the bitmap */
+	size = cg->pitch * cg->rows;
+	if (size > 0) {
+		cg->bitmap = malloc(size);
+		glyph_malloc_count++;
+		glyph_total_bytes += size;
+		if (cg->bitmap)
+			memcpy(cg->bitmap, slot->bitmap.buffer, size);
+	}
+
+	cg->valid = 1;
+	return cg;
+}
+
 void
 render_char_to_buffer(uint32_t *pixels, int buf_w, int buf_h, int x, int y,
                       unsigned long charcode, uint32_t color)
 {
-	FT_GlyphSlot slot;
+	CachedGlyph *cg;
 	int gx, gy, px, py;
 	unsigned char v, r, g, b;
 
-	/* Try to load the glyph, fall back to '?' if it fails */
-	if (FT_Load_Char(ft_face, charcode, FT_LOAD_RENDER)) {
-		if (charcode != '?' && FT_Load_Char(ft_face, '?', FT_LOAD_RENDER))
-			return;
-	}
+	cg = get_cached_glyph(charcode);
+	if (!cg || !cg->bitmap)
+		return;
 
-	slot = ft_face->glyph;
 	r = (color >> 16) & 0xFF;
 	g = (color >> 8) & 0xFF;
 	b = color & 0xFF;
 
-	for (gy = 0; gy < (int)slot->bitmap.rows; gy++) {
+	for (gy = 0; gy < cg->rows; gy++) {
 		/* Align to top of cell - ascender at top, descender may clip at bottom */
-		py = y + (cell_height - slot->bitmap_top) + gy - 4;
+		py = y + (cell_height - cg->bitmap_top) + gy - 4;
 		if (py < 0 || py >= buf_h) continue;
-		for (gx = 0; gx < (int)slot->bitmap.width; gx++) {
-			px = x + slot->bitmap_left + gx;
+		for (gx = 0; gx < cg->width; gx++) {
+			px = x + cg->bitmap_left + gx;
 			if (px < 0 || px >= buf_w) continue;
-			v = slot->bitmap.buffer[gy * slot->bitmap.pitch + gx];
+			v = cg->bitmap[gy * cg->pitch + gx];
 			if (v > 0)
 				pixels[py * buf_w + px] = 0xFF000000 |
 					((r * v / 255) << 16) |
@@ -6488,28 +7533,26 @@ void
 render_char_clipped(uint32_t *pixels, int buf_w, int buf_h, int x, int y,
                     unsigned long charcode, uint32_t color, int clip_left, int clip_right)
 {
-	FT_GlyphSlot slot;
+	CachedGlyph *cg;
 	int gx, gy, px, py;
 	unsigned char v, r, g, b;
 
-	if (FT_Load_Char(ft_face, charcode, FT_LOAD_RENDER)) {
-		if (charcode != '?' && FT_Load_Char(ft_face, '?', FT_LOAD_RENDER))
-			return;
-	}
+	cg = get_cached_glyph(charcode);
+	if (!cg || !cg->bitmap)
+		return;
 
-	slot = ft_face->glyph;
 	r = (color >> 16) & 0xFF;
 	g = (color >> 8) & 0xFF;
 	b = color & 0xFF;
 
-	for (gy = 0; gy < (int)slot->bitmap.rows; gy++) {
-		py = y + (cell_height - slot->bitmap_top) + gy - 4;
+	for (gy = 0; gy < cg->rows; gy++) {
+		py = y + (cell_height - cg->bitmap_top) + gy - 4;
 		if (py < 0 || py >= buf_h) continue;
-		for (gx = 0; gx < (int)slot->bitmap.width; gx++) {
-			px = x + slot->bitmap_left + gx;
+		for (gx = 0; gx < cg->width; gx++) {
+			px = x + cg->bitmap_left + gx;
 			if (px < clip_left || px >= clip_right) continue;
 			if (px < 0 || px >= buf_w) continue;
-			v = slot->bitmap.buffer[gy * slot->bitmap.pitch + gx];
+			v = cg->bitmap[gy * cg->pitch + gx];
 			if (v > 0)
 				pixels[py * buf_w + px] = 0xFF000000 |
 					((r * v / 255) << 16) |
@@ -6532,6 +7575,7 @@ updateframe(Client *c)
 	uint32_t bg_color;
 	struct TitleBuffer *tb;
 	uint32_t *pixels;
+	int dims_changed;
 
 	if (!c || !c->mon)
 		return;
@@ -6558,6 +7602,38 @@ updateframe(Client *c)
 
 	if (width <= 0 || height <= 0)
 		return;
+
+	/* Check if dimensions changed - if so, we need to reallocate buffers */
+	dims_changed = (width != c->frame_width || height != c->frame_height);
+	if (dims_changed) {
+		/* Release old cached buffers properly - scene must release first, then we drop our ref */
+		if (c->frame_top_buf) {
+			if (c->frame_top)
+				wlr_scene_buffer_set_buffer(c->frame_top, NULL);
+			wlr_buffer_drop(&c->frame_top_buf->base);
+			c->frame_top_buf = NULL;
+		}
+		if (c->frame_bottom_buf) {
+			if (c->frame_bottom)
+				wlr_scene_buffer_set_buffer(c->frame_bottom, NULL);
+			wlr_buffer_drop(&c->frame_bottom_buf->base);
+			c->frame_bottom_buf = NULL;
+		}
+		if (c->frame_left_buf) {
+			if (c->frame_left)
+				wlr_scene_buffer_set_buffer(c->frame_left, NULL);
+			wlr_buffer_drop(&c->frame_left_buf->base);
+			c->frame_left_buf = NULL;
+		}
+		if (c->frame_right_buf) {
+			if (c->frame_right)
+				wlr_scene_buffer_set_buffer(c->frame_right, NULL);
+			wlr_buffer_drop(&c->frame_right_buf->base);
+			c->frame_right_buf = NULL;
+		}
+		c->frame_width = width;
+		c->frame_height = height;
+	}
 
 	/* Check if this window is focused */
 	focused = (focustop(c->mon) == c);
@@ -6597,11 +7673,18 @@ updateframe(Client *c)
 	bg_color = RGB_TO_ARGB(cfg_border_color);
 
 	/* === TOP FRAME === */
-	tb = ecalloc(1, sizeof(*tb));
-	tb->stride = width * 4;
-	tb->data = ecalloc(1, tb->stride * cell_height);
-	wlr_buffer_init(&tb->base, &titlebuf_impl, width, cell_height);
+	/* Reuse buffer if dimensions match, otherwise allocate new */
+	if (!c->frame_top_buf) {
+		c->frame_top_buf = ecalloc(1, sizeof(*c->frame_top_buf));
+		c->frame_top_buf->stride = width * 4;
+		c->frame_top_buf->data = ecalloc(1, c->frame_top_buf->stride * cell_height);
+		wlr_buffer_init(&c->frame_top_buf->base, &titlebuf_impl, width, cell_height);
+		titlebuf_alloc_count++;
+	}
+	tb = c->frame_top_buf;
 	pixels = tb->data;
+	
+	/* Clear buffer */
 	for (i = 0; i < width * cell_height; i++)
 		pixels[i] = bg_color;
 
@@ -6763,16 +7846,23 @@ updateframe(Client *c)
 		c->frame_top = wlr_scene_buffer_create(c->scene, NULL);
 	wlr_scene_node_set_position(&c->frame_top->node, 0, 0);
 	wlr_scene_buffer_set_buffer(c->frame_top, &tb->base);
-	wlr_buffer_drop(&tb->base);
+	/* Don't drop - we're caching the buffer for reuse */
 
 	/* === BOTTOM FRAME === */
 	/* Only draw if no neighbor below (neighbor draws the shared border) */
 	if (!below) {
-		tb = ecalloc(1, sizeof(*tb));
-		tb->stride = width * 4;
-		tb->data = ecalloc(1, tb->stride * cell_height);
-		wlr_buffer_init(&tb->base, &titlebuf_impl, width, cell_height);
+		/* Reuse buffer if dimensions match */
+		if (!c->frame_bottom_buf) {
+			c->frame_bottom_buf = ecalloc(1, sizeof(*c->frame_bottom_buf));
+			c->frame_bottom_buf->stride = width * 4;
+			c->frame_bottom_buf->data = ecalloc(1, c->frame_bottom_buf->stride * cell_height);
+			wlr_buffer_init(&c->frame_bottom_buf->base, &titlebuf_impl, width, cell_height);
+			titlebuf_alloc_count++;
+		}
+		tb = c->frame_bottom_buf;
 		pixels = tb->data;
+		
+		/* Clear buffer */
 		for (i = 0; i < width * cell_height; i++)
 			pixels[i] = bg_color;
 
@@ -6787,7 +7877,7 @@ updateframe(Client *c)
 			c->frame_bottom = wlr_scene_buffer_create(c->scene, NULL);
 		wlr_scene_node_set_position(&c->frame_bottom->node, 0, height - cell_height);
 		wlr_scene_buffer_set_buffer(c->frame_bottom, &tb->base);
-		wlr_buffer_drop(&tb->base);
+		/* Don't drop - we're caching the buffer for reuse */
 	} else if (c->frame_bottom) {
 		wlr_scene_buffer_set_buffer(c->frame_bottom, NULL);
 	}
@@ -6799,11 +7889,18 @@ updateframe(Client *c)
 		int rows = side_height / cell_height;
 		
 		if (rows > 0) {
-			tb = ecalloc(1, sizeof(*tb));
-			tb->stride = cell_width * 4;
-			tb->data = ecalloc(1, tb->stride * side_height);
-			wlr_buffer_init(&tb->base, &titlebuf_impl, cell_width, side_height);
+			/* Reuse buffer if dimensions match */
+			if (!c->frame_left_buf) {
+				c->frame_left_buf = ecalloc(1, sizeof(*c->frame_left_buf));
+				c->frame_left_buf->stride = cell_width * 4;
+				c->frame_left_buf->data = ecalloc(1, c->frame_left_buf->stride * side_height);
+				wlr_buffer_init(&c->frame_left_buf->base, &titlebuf_impl, cell_width, side_height);
+				titlebuf_alloc_count++;
+			}
+			tb = c->frame_left_buf;
 			pixels = tb->data;
+			
+			/* Clear buffer */
 			for (i = 0; i < cell_width * side_height; i++)
 				pixels[i] = bg_color;
 
@@ -6814,7 +7911,7 @@ updateframe(Client *c)
 				c->frame_left = wlr_scene_buffer_create(c->scene, NULL);
 			wlr_scene_node_set_position(&c->frame_left->node, 0, cell_height);
 			wlr_scene_buffer_set_buffer(c->frame_left, &tb->base);
-			wlr_buffer_drop(&tb->base);
+			/* Don't drop - we're caching the buffer for reuse */
 		}
 	} else if (c->frame_left) {
 		wlr_scene_buffer_set_buffer(c->frame_left, NULL);
@@ -6827,11 +7924,18 @@ updateframe(Client *c)
 		int rows = side_height / cell_height;
 		
 		if (rows > 0) {
-			tb = ecalloc(1, sizeof(*tb));
-			tb->stride = cell_width * 4;
-			tb->data = ecalloc(1, tb->stride * side_height);
-			wlr_buffer_init(&tb->base, &titlebuf_impl, cell_width, side_height);
+			/* Reuse buffer if dimensions match */
+			if (!c->frame_right_buf) {
+				c->frame_right_buf = ecalloc(1, sizeof(*c->frame_right_buf));
+				c->frame_right_buf->stride = cell_width * 4;
+				c->frame_right_buf->data = ecalloc(1, c->frame_right_buf->stride * side_height);
+				wlr_buffer_init(&c->frame_right_buf->base, &titlebuf_impl, cell_width, side_height);
+				titlebuf_alloc_count++;
+			}
+			tb = c->frame_right_buf;
 			pixels = tb->data;
+			
+			/* Clear buffer */
 			for (i = 0; i < cell_width * side_height; i++)
 				pixels[i] = bg_color;
 
@@ -6842,7 +7946,7 @@ updateframe(Client *c)
 				c->frame_right = wlr_scene_buffer_create(c->scene, NULL);
 			wlr_scene_node_set_position(&c->frame_right->node, width - cell_width, cell_height);
 			wlr_scene_buffer_set_buffer(c->frame_right, &tb->base);
-			wlr_buffer_drop(&tb->base);
+			/* Don't drop - we're caching the buffer for reuse */
 		} else if (c->frame_right) {
 			wlr_scene_buffer_set_buffer(c->frame_right, NULL);
 		}
@@ -7086,6 +8190,35 @@ unmapnotify(struct wl_listener *listener, void *data)
 		wl_list_remove(&c->link);
 		setmon(c, NULL, 0);
 		wl_list_remove(&c->flink);
+	}
+
+	/* Clear frame buffers before destroying scene to prevent leaks */
+	if (c->frame_top)
+		wlr_scene_buffer_set_buffer(c->frame_top, NULL);
+	if (c->frame_bottom)
+		wlr_scene_buffer_set_buffer(c->frame_bottom, NULL);
+	if (c->frame_left)
+		wlr_scene_buffer_set_buffer(c->frame_left, NULL);
+	if (c->frame_right)
+		wlr_scene_buffer_set_buffer(c->frame_right, NULL);
+
+	/* Free cached frame buffers */
+	/* Drop our buffer references - scene already released via set_buffer(NULL) above */
+	if (c->frame_top_buf) {
+		wlr_buffer_drop(&c->frame_top_buf->base);
+		c->frame_top_buf = NULL;
+	}
+	if (c->frame_bottom_buf) {
+		wlr_buffer_drop(&c->frame_bottom_buf->base);
+		c->frame_bottom_buf = NULL;
+	}
+	if (c->frame_left_buf) {
+		wlr_buffer_drop(&c->frame_left_buf->base);
+		c->frame_left_buf = NULL;
+	}
+	if (c->frame_right_buf) {
+		wlr_buffer_drop(&c->frame_right_buf->base);
+		c->frame_right_buf = NULL;
 	}
 
 	wlr_scene_node_destroy(&c->scene->node);
