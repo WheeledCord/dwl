@@ -1029,7 +1029,9 @@ buttonpress(struct wl_listener *listener, void *data)
 			break;
 
 		/* Check for menu button click FIRST - this should toggle the menu */
-		if (selmon && cursor->y >= selmon->m.y && cursor->y < selmon->m.y + cell_height) {
+		/* Skip if fullscreen client is focused */
+		Client *fc = focustop(selmon);
+		if (selmon && !(fc && fc->isfullscreen) && cursor->y >= selmon->m.y && cursor->y < selmon->m.y + cell_height) {
 			int bar_x = cursor->x - selmon->m.x;
 			int btn_len = strlen(cfg_menu_button);
 			int btn_cells = btn_len + 2; /* [btn] */
@@ -1113,7 +1115,9 @@ buttonpress(struct wl_listener *listener, void *data)
 		}
 
 		/* Handle clicks on the status bar */
-		if (selmon && cursor->y >= selmon->m.y && cursor->y < selmon->m.y + cell_height) {
+		/* Skip if fullscreen client is focused */
+		fc = focustop(selmon);
+		if (selmon && !(fc && fc->isfullscreen) && cursor->y >= selmon->m.y && cursor->y < selmon->m.y + cell_height) {
 			int bar_x = cursor->x - selmon->m.x;
 			int x = 0;
 			
@@ -4328,6 +4332,7 @@ setfullscreen(Client *c, int fullscreen)
 		resize(c, c->prev, 0);
 	}
 	arrange(c->mon);
+	updatebar(c->mon);  /* Update bar visibility */
 	printstatus();
 }
 
@@ -7339,6 +7344,10 @@ updatebar(Monitor *m)
 	wlr_scene_node_set_position(&m->bar->node, m->m.x, m->m.y);
 	wlr_scene_buffer_set_buffer(m->bar, &tb->base);
 	/* Don't drop - we're caching the buffer for reuse */
+
+	/* Hide bar when a fullscreen client is focused */
+	Client *fc = focustop(m);
+	wlr_scene_node_set_enabled(&m->bar->node, !(fc && fc->isfullscreen));
 }
 
 /* Check if there's an adjacent tiled window in the given direction.
