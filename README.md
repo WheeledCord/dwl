@@ -10,7 +10,25 @@ features:
 - launcher: you can press super+d for application launcher. i should probably make it a seperate app but like uhuhuj
 - scheme repl: (super+shift+;)
 
-building:
+## installation
+
+just run:
+```bash
+git clone https://github.com/WheeledCord/tbwm
+cd tbwm
+./install.sh
+```
+
+the script will:
+- detect your distro and install dependencies
+- build wlroots 0.19 from source if your distro's version is too old (looking at you debian)
+- build and install tbwm
+- set up the session file so it shows up in your display manager
+
+then log out and select "TurboWM" from your display manager. or run `tbwm` from a tty
+
+### manual build (if you hate convenience)
+
 dependencies:
 - wlroots 0.19+
 - wayland, wayland-protocols
@@ -18,4 +36,13 @@ dependencies:
 - freetype2, pangocairo
 - libxcb, xcb-icccm (for XWayland)
 
+```bash
+make
+sudo make install
+```
+
+## configuration
+
 configuration is done via ~/.config/tbwm/config.scm
+
+check out docs/configuration.md for all the options or just press super+\` to open the repl and figure it out yourself
