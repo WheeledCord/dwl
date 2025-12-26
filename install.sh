@@ -277,17 +277,21 @@ EOF
         fi
     fi
     
-    # Create wrapper script that sets LD_LIBRARY_PATH (for custom wlroots)
-    sudo tee /usr/local/bin/tbwm-wrapper > /dev/null << 'EOF'
+    # If wlroots was built from source, create a wrapper that sets LD_LIBRARY_PATH
+    if [ -f "/usr/local/lib/libwlroots-0.19.so" ] || [ -f "/usr/local/lib64/libwlroots-0.19.so" ]; then
+        info "Custom wlroots detected, creating launcher wrapper..."
+        # Move the real binary
+        if [ -f /usr/local/bin/tbwm ] && [ ! -L /usr/local/bin/tbwm ]; then
+            sudo mv /usr/local/bin/tbwm /usr/local/bin/tbwm.bin
+        fi
+        # Create wrapper as the main command
+        sudo tee /usr/local/bin/tbwm > /dev/null << 'EOF'
 #!/bin/bash
 export LD_LIBRARY_PATH="/usr/local/lib:/usr/local/lib64:$LD_LIBRARY_PATH"
-exec /usr/local/bin/tbwm "$@"
+exec /usr/local/bin/tbwm.bin "$@"
 EOF
-    sudo chmod 755 /usr/local/bin/tbwm-wrapper
-    
-    # Update session to use wrapper
-    sudo sed -i 's|Exec=/usr/local/bin/tbwm|Exec=/usr/local/bin/tbwm-wrapper|' \
-        /usr/share/wayland-sessions/tbwm.desktop
+        sudo chmod 755 /usr/local/bin/tbwm
+    fi
 }
 
 # Main

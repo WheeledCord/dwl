@@ -12,7 +12,7 @@ TBWMDEVCFLAGS = -g -Wpedantic -Wall -Wextra -Wdeclaration-after-statement \
 	-Wfloat-conversion
 
 # CFLAGS / LDFLAGS
-PKGS      = wayland-server xkbcommon libinput pangocairo freetype2 pixman-1 $(XLIBS)
+PKGS      = wayland-server xkbcommon libinput freetype2 pixman-1 $(XLIBS)
 TBWMCFLAGS = `$(PKG_CONFIG) --cflags $(PKGS)` $(WLR_INCS) $(TBWMCPPFLAGS) $(TBWMDEVCFLAGS) $(CFLAGS)
 LDLIBS    = `$(PKG_CONFIG) --libs $(PKGS)` $(WLR_LIBS) -lm $(LIBS)
 

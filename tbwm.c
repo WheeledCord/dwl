@@ -283,26 +283,15 @@ typedef struct {
 	int monitor;
 } Rule;
 
-typedef struct {
-	struct wlr_scene_tree *scene;
-
-	struct wlr_session_lock_v1 *lock;
+/* Session lock helper structure (was missing after accidental edit) */
+typedef struct SessionLock {
 	struct wl_listener new_surface;
-	struct wl_listener unlock;
 	struct wl_listener destroy;
+	struct wl_listener unlock;
+	struct wl_list surfaces; /* list of wlr_session_lock_surface_v1 via ->link */
+	struct wlr_session_lock_v1 *lock;
+	struct wlr_scene_tree *scene;
 } SessionLock;
-
-/* scary */
-static void applybounds(Client *c, struct wlr_box *bbox);
-static void applyrules(Client *c);
-static void arrange(Monitor *m);
-static void arrangelayer(Monitor *m, struct wl_list *list,
-		struct wlr_box *usable_area, int exclusive);
-static void arrangelayers(Monitor *m);
-static void axisnotify(struct wl_listener *listener, void *data);
-static void buttonpress(struct wl_listener *listener, void *data);
-static void chvt(const Arg *arg);
-static void checkidleinhibitor(struct wlr_surface *exclude);
 static void cleanup(void);
 static void cleanupmon(struct wl_listener *listener, void *data);
 static void cleanuplisteners(void);
@@ -312,6 +301,7 @@ static void commitnotify(struct wl_listener *listener, void *data);
 static void commitpopup(struct wl_listener *listener, void *data);
 static void createdecoration(struct wl_listener *listener, void *data);
 static void createidleinhibitor(struct wl_listener *listener, void *data);
+static void checkidleinhibitor(struct wlr_surface *exclude);
 static void createkeyboard(struct wlr_keyboard *keyboard);
 static KeyboardGroup *createkeyboardgroup(void);
 static void createlayersurface(struct wl_listener *listener, void *data);
@@ -768,6 +758,36 @@ static struct wlr_box sgeom;
 static struct wl_list mons;
 static Monitor *selmon;
 
+/* forward declarations for listeners (ensure available for static initializers) */
+static void axisnotify(struct wl_listener *listener, void *data);
+static void buttonpress(struct wl_listener *listener, void *data);
+static void cursorframe(struct wl_listener *listener, void *data);
+static void motionrelative(struct wl_listener *listener, void *data);
+static void motionabsolute(struct wl_listener *listener, void *data);
+static void gpureset(struct wl_listener *listener, void *data);
+static void updatemons(struct wl_listener *listener, void *data);
+static void createidleinhibitor(struct wl_listener *listener, void *data);
+static void inputdevice(struct wl_listener *listener, void *data);
+static void virtualkeyboard(struct wl_listener *listener, void *data);
+static void virtualpointer(struct wl_listener *listener, void *data);
+static void createpointerconstraint(struct wl_listener *listener, void *data);
+static void createmon(struct wl_listener *listener, void *data);
+static void createnotify(struct wl_listener *listener, void *data);
+static void createpopup(struct wl_listener *listener, void *data);
+static void createdecoration(struct wl_listener *listener, void *data);
+static void createlayersurface(struct wl_listener *listener, void *data);
+static void outputmgrapply(struct wl_listener *listener, void *data);
+static void outputmgrtest(struct wl_listener *listener, void *data);
+static void powermgrsetmode(struct wl_listener *listener, void *data);
+static void urgent(struct wl_listener *listener, void *data);
+static void setcursor(struct wl_listener *listener, void *data);
+static void setpsel(struct wl_listener *listener, void *data);
+static void setsel(struct wl_listener *listener, void *data);
+static void setcursorshape(struct wl_listener *listener, void *data);
+static void requeststartdrag(struct wl_listener *listener, void *data);
+static void startdrag(struct wl_listener *listener, void *data);
+static void locksession(struct wl_listener *listener, void *data);
+
 /* global event handlers */
 static struct wl_listener cursor_axis = {.notify = axisnotify};
 static struct wl_listener cursor_button = {.notify = buttonpress};
@@ -1205,9 +1225,36 @@ buttonpress(struct wl_listener *listener, void *data)
 		}
 
 		/* Change focus if the button was _pressed_ over a client */
+		/* Detect clicks on window-frame control buttons ([F] and [X]) */
 		xytonode(cursor->x, cursor->y, NULL, &c, NULL, NULL, NULL);
-		if (c && (!client_is_unmanaged(c) || client_wants_focus(c)))
-			focusclient(c, 1);
+		if (c && c->mon) {
+			int rel_x = cursor->x - c->geom.x;
+			int rel_y = cursor->y - c->geom.y;
+			/* Only consider clicks in the top frame row */
+			if (rel_y >= 0 && rel_y < cell_height) {
+				int width_cells = c->geom.width / cell_width;
+				int reserved_btn_cells = 8;
+				int btn_start_cell = width_cells - 2 - reserved_btn_cells; /* cell index */
+				int bx = btn_start_cell * cell_width; /* pixel x relative to client */
+				/* [F] occupies bx .. bx+3*cell_width-1 */
+				if (rel_x >= bx && rel_x < bx + cell_width * 3) {
+					/* Toggle floating for this client */
+					setfloating(c, !c->isfloating);
+					updateframes();
+					updatebars();
+					return;
+				}
+				/* [X] occupies bx+4..bx+7 cells */
+				if (rel_x >= bx + cell_width * 4 && rel_x < bx + cell_width * 7) {
+					/* Close this client */
+					client_send_close(c);
+					return;
+				}
+			}
+			/* Fallback: change focus if not clicking a control button */
+			if (!client_is_unmanaged(c) || client_wants_focus(c))
+				focusclient(c, 1);
+		}
 
 		keyboard = wlr_seat_get_keyboard(seat);
 		mods = keyboard ? wlr_keyboard_get_modifiers(keyboard) : 0;
@@ -6246,6 +6293,10 @@ scrolltimer(void *data)
 			scroll_count++;
 		}
 	}
+
+	/* Also update the top bar so tabs in the bar scroll smoothly */
+	if (any_title_needs_scroll)
+		updatebars();
 	
 	/* If no windows needed scrolling, reset the flag */
 	if (scroll_count == 0)
@@ -7690,22 +7741,35 @@ updateframe(Client *c)
 	title_len = 0;
 	while (title[title_len]) title_len++;
 	
-	/* Title area: from cell 2 to width - cell*2, but we need space for " title " */
-	/* Available cells for title content: (width/cell_width) - 4 corners/lines - 2 spaces = width/cell - 6 */
-	{
-		int avail_cells = (width / cell_width) - 6;
-		int title_cells = title_len;
-		int needs_overflow = (title_cells > avail_cells);
-		int title_start_cell, title_x, fill_x, py, px;
-		uint32_t title_bg, title_fg;
+		/* Title area: compute button positions so title truncates/scrolls
+		 * to exactly one cell left of the [F] button, and buttons have
+		 * two-cell padding to the right before the corner. */
+		{
+			int width_cells = width / cell_width;
+			int right_gap = 2; /* two cells padding to the right of buttons */
+			/* Buttons layout: [F] (3 cells) + sep (1) + [X] (3 cells) => 7 cells
+			 * left padding (1 cell) is drawn as a single ═ before [F].
+			 * Compute start cell for '[' of [F]: */
+			int btn_start_cell = width_cells - 7 - right_gap;
+			if (btn_start_cell < 3)
+				btn_start_cell = 3; /* ensure some space for title */
+			int bx = btn_start_cell * cell_width; /* pixel x for '[' of [F] */
+			int title_right_px = bx - cell_width; /* title may go up to one cell left of [F] */
+			if (title_right_px < cell_width * 2)
+				title_right_px = cell_width * 2;
+			int avail_cells = (title_right_px - cell_width * 2) / cell_width;
+			int title_cells = title_len;
+			int needs_overflow = (title_cells > avail_cells);
+			int title_start_cell, title_x, fill_x, py, px;
+			uint32_t title_bg, title_fg;
 		
 		/* Update scroll flag for this client */
 		c->needs_title_scroll = (needs_overflow && title_scroll_mode) ? 1 : 0;
 		if (c->needs_title_scroll)
 			any_title_needs_scroll = 1;
 		
-		/* Fill cells 2 to (width/cell - 2) with h_line first */
-		for (fill_x = cell_width * 2; fill_x < width - cell_width * 2; fill_x += cell_width) {
+		/* Fill cells 2 to (title_right_px) with h_line first (leave room for buttons) */
+		for (fill_x = cell_width * 2; fill_x < title_right_px; fill_x += cell_width) {
 			render_char_to_buffer(pixels, width, cell_height, fill_x, 0, h_line, RGB_TO_ARGB(cfg_border_line_color));
 		}
 		
@@ -7729,8 +7793,8 @@ updateframe(Client *c)
 			int pixel_offset = title_scroll_offset % total_scroll_width;
 			int display_width = avail_cells * cell_width;
 			int bg_end = title_x + display_width;
-			if (bg_end > width - cell_width * 2)
-				bg_end = width - cell_width * 2;
+			if (bg_end > title_right_px)
+				bg_end = title_right_px;
 			
 			/* Fill background for display area */
 			for (py = 0; py < cell_height; py++) {
@@ -7776,8 +7840,8 @@ updateframe(Client *c)
 			{
 				int bg_start = title_x;
 				int bg_end = title_x + avail_cells * cell_width;
-				if (bg_end > width - cell_width * 2)
-					bg_end = width - cell_width * 2;
+				if (bg_end > title_right_px)
+					bg_end = title_right_px;
 				for (py = 0; py < cell_height; py++) {
 					for (px = bg_start; px < bg_end; px++) {
 						pixels[py * width + px] = title_bg;
@@ -7809,8 +7873,8 @@ updateframe(Client *c)
 			{
 				int bg_start = title_x;
 				int bg_end = title_x + title_cells * cell_width;
-				if (bg_end > width - cell_width * 2)
-					bg_end = width - cell_width * 2;
+				if (bg_end > title_right_px)
+					bg_end = title_right_px;
 				for (py = 0; py < cell_height; py++) {
 					for (px = bg_start; px < bg_end; px++) {
 						pixels[py * width + px] = title_bg;
@@ -7832,9 +7896,39 @@ updateframe(Client *c)
 		}
 	}
 	
-	/* End corner */
-	render_char_to_buffer(pixels, width, cell_height, width - cell_width * 2, 0, h_line, RGB_TO_ARGB(cfg_border_line_color));
-	render_char_to_buffer(pixels, width, cell_height, width - cell_width, 0, tr_char, RGB_TO_ARGB(cfg_border_line_color));
+	/* Draw control buttons just before the end corner: [F]═[X] (uses same box-drawing color)
+	 * Compute start x for button area (in buffer coordinates). Use same math as title area
+	 * so title truncation boundary aligns: buttons occupy 7 cells, and we leave a
+	 * two-cell right gap (h_line + corner). */
+		{
+			int width_cells = width / cell_width;
+			int btn_cells = 7; /* [F] (3) + sep (1) + [X] (3) */
+			int right_gap = 2; /* h_line + corner */
+			int btn_start_cell = width_cells - btn_cells - right_gap;
+			if (btn_start_cell < 2) /* keep at least two cells for title area */
+				btn_start_cell = 2;
+			int bx = btn_start_cell * cell_width;
+		uint32_t line_col = RGB_TO_ARGB(cfg_border_line_color);
+
+		/* left padding line (single ═) immediately before [F] */
+		if (bx - cell_width >= 0)
+			render_char_to_buffer(pixels, width, cell_height, bx - cell_width, 0, h_line, line_col);
+
+		/* [F] */
+		render_char_to_buffer(pixels, width, cell_height, bx, 0, '[', line_col);
+		render_char_to_buffer(pixels, width, cell_height, bx + cell_width, 0, 'F', line_col);
+		render_char_to_buffer(pixels, width, cell_height, bx + cell_width * 2, 0, ']', line_col);
+		/* separator ═ */
+		render_char_to_buffer(pixels, width, cell_height, bx + cell_width * 3, 0, h_line, line_col);
+
+		/* [X] */
+		render_char_to_buffer(pixels, width, cell_height, bx + cell_width * 4, 0, '[', line_col);
+		render_char_to_buffer(pixels, width, cell_height, bx + cell_width * 5, 0, 'X', line_col);
+		render_char_to_buffer(pixels, width, cell_height, bx + cell_width * 6, 0, ']', line_col);
+		/* End corner (leave a single padding line between buttons and corner) */
+		render_char_to_buffer(pixels, width, cell_height, width - cell_width * 2, 0, h_line, line_col);
+		render_char_to_buffer(pixels, width, cell_height, width - cell_width, 0, tr_char, line_col);
+	}
 
 	if (!c->frame_top)
 		c->frame_top = wlr_scene_buffer_create(c->scene, NULL);

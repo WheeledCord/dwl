@@ -2,6 +2,19 @@
 
 how to configure tbwm
 
+## design constraints
+
+before customizing, understand the design philosophy:
+
+- **VGA aesthetic**: everything uses an 8×16 character cell grid with box-drawing characters
+- **low-end target**: designed for 1GB RAM / Intel Atom systems - no bloat
+- **scheme runtime**: config is live scheme code, changes apply instantly
+
+customization limits:
+- colors, keybindings, layout params: go wild
+- fonts: must be fixed-width, ideally 8x16 VGA-compatible
+- complex logic: cache computed values, don't do expensive work in callbacks
+
 ## the file
 
 config lives at ~/.config/tbwm/config.scm
