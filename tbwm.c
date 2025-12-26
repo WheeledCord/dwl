@@ -2179,8 +2179,9 @@ dwindle_recalc(DwindleNode *node)
 	if (!node) return;
 	
 	if (node->client) {
-		/* Leaf node: apply geometry to client */
-		resize(node->client, node->box, 0);
+		/* Leaf node: apply geometry to client (skip fullscreen clients) */
+		if (!node->client->isfullscreen)
+			resize(node->client, node->box, 0);
 	} else {
 		/* Internal node: split and recurse */
 		c0 = node->children[0];
@@ -3385,46 +3386,9 @@ keypress(struct wl_listener *listener, void *data)
 
 	wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
 
-	/* Debug: log keys when Ctrl+Alt are held so we can see what keysym is generated */
-	if ((mods & WLR_MODIFIER_CTRL) && (mods & WLR_MODIFIER_ALT)) {
-		int k;
-		for (k = 0; k < nsyms; k++) {
-			char name[64] = {0};
-			xkb_keysym_t s = syms[k];
-			xkb_keysym_get_name(s, name, sizeof(name));
-			file_debug_log("tbwm: keypress: ctrl+alt keycode=%u sym=0x%x (%s) state=%d\n",
-				keycode, (unsigned int)s, name[0] ? name : "(unknown)", event->state);
-			fflush(NULL);
-		}
-	}
-
-	/* Debug: log keys when MODKEY (Logo or Alt) + Shift are held so we can trace M-S-Arrow bindings */
-	if ((mods & WLR_MODIFIER_SHIFT) && (mods & (WLR_MODIFIER_LOGO|WLR_MODIFIER_ALT))) {
-		int k;
-		for (k = 0; k < nsyms; k++) {
-			char name[64] = {0};
-			xkb_keysym_t s = syms[k];
-			xkb_keysym_get_name(s, name, sizeof(name));
-			file_debug_log("tbwm: keypress: mod+shift mods=0x%x keycode=%u sym=0x%x (%s) state=%d\n",
-				mods, keycode, (unsigned int)s, name[0] ? name : "(unknown)", event->state);
-			fflush(NULL);
-		}
-	}
-
 	/* On _press_ if there is no active screen locker,
 	 * attempt to process a compositor keybinding. */
 	if (!locked && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
-		/* Debugging: if Ctrl+Alt are held, print detected keysyms */
-		if ((mods & (WLR_MODIFIER_CTRL|WLR_MODIFIER_ALT)) == (WLR_MODIFIER_CTRL|WLR_MODIFIER_ALT)) {
-			for (i = 0; i < nsyms; i++) {
-				char symname[64] = {0};
-				xkb_keysym_get_name(syms[i], symname, sizeof(symname));
-				file_debug_log("tbwm: keypress: mods=0x%x keycode=%u sym=0x%x (%s)\n",
-					mods, keycode, (unsigned int)syms[i], symname[0] ? symname : "(no-name)");
-				fflush(NULL);
-			}
-		}
-
 		for (i = 0; i < nsyms; i++)
 			handled = keybinding(mods, syms[i]) || handled;
 	}
@@ -4123,7 +4087,19 @@ resize(Client *c, struct wlr_box geo, int interact)
 	c->resize = client_set_size(c, 
 			c->geom.width - (c->isfullscreen ? 0 : 2 * cell_width),
 			c->geom.height - (c->isfullscreen ? 0 : 2 * cell_height));
+	if (c->isfullscreen)
+		file_debug_log("RESIZE [%s]: fullscreen size set to %dx%d, scene pos=(%d,%d), surface pos=(%d,%d)\n",
+			client_get_title(c),
+			c->geom.width - (c->isfullscreen ? 0 : 2 * cell_width),
+			c->geom.height - (c->isfullscreen ? 0 : 2 * cell_height),
+			c->geom.x, c->geom.y, frame_inset, c->isfullscreen ? 0 : cell_height);
 	client_get_clip(c, &clip);
+	if (c->isfullscreen)
+		file_debug_log("RESIZE [%s]: fullscreen clip = {%d, %d, %d, %d}, xdg geom = {%d, %d, %d, %d}\n",
+			client_get_title(c),
+			clip.x, clip.y, clip.width, clip.height,
+			c->surface.xdg->geometry.x, c->surface.xdg->geometry.y,
+			c->surface.xdg->geometry.width, c->surface.xdg->geometry.height);
 	wlr_scene_subsurface_tree_set_clip(&c->scene_surface->node, &clip);
 }
 
