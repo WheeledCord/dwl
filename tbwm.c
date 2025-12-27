@@ -239,6 +239,7 @@ struct Monitor {
 	struct wlr_scene_output *scene_output;
 	struct wlr_scene_rect *fullscreen_bg; /* See createmon() for info */
 	struct wlr_scene_buffer *bar; /* status bar / launcher */
+	struct wlr_scene_buffer *repl; /* rendered REPL output for this monitor */
 	struct TitleBuffer *bar_buf;  /* cached bar buffer for reuse */
 	int bar_width;                /* cached width to detect resize */
 	struct wl_listener frame;
@@ -498,6 +499,7 @@ static int title_scroll_mode = 1;        /* 0 = truncate with ..., 1 = scroll */
 static int title_scroll_speed = 30;      /* pixels per second */
 static struct wl_event_source *scroll_timer = NULL;
 static int any_title_needs_scroll = 0;   /* track if any title needs scrolling */
+static double title_scroll_accum = 0.0;  /* fractional pixel accumulator for scroll */
 
 /* REPL state */
 static int repl_visible = 1;             /* 1 = REPL background/text visible */
@@ -509,7 +511,6 @@ static int repl_input_len = 0;
 static char repl_history[REPL_HISTORY_LINES][REPL_LINE_LEN];  /* scrollback buffer */
 static int repl_history_count = 0;       /* number of lines in history */
 static int repl_scroll_offset = 0;       /* scroll position (0 = bottom) */
-static struct wlr_scene_buffer *repl_buffer = NULL;  /* rendered REPL output */
 
 /* REPL log config: only lines with severity >= this appear in REPL */
 static int cfg_repl_log_level = TBWM_LOG_ERROR; /* default: only errors */
@@ -1394,9 +1395,11 @@ cleanup(void)
 		appmenu_tb = NULL;
 	}
 
-	/* Clean up REPL buffer */
-	if (repl_buffer) {
-		wlr_scene_buffer_set_buffer(repl_buffer, NULL);
+	/* Clean up REPL buffers on all monitors */
+	wl_list_for_each(m, &mons, link) {
+		if (m->repl) {
+			wlr_scene_buffer_set_buffer(m->repl, NULL);
+		}
 	}
 
 	/* Clean up FreeType */
@@ -6324,16 +6327,67 @@ scrolltimer(void *data)
 {
 	Client *c;
 	int scroll_count = 0;
-	
-	/* Handle smooth scrolling for window titlebars only */
-	if (!title_scroll_mode || !any_title_needs_scroll) {
-		/* No scrolling needed, check again later */
+    
+	/* Handle smooth scrolling for window titlebars and top-bar tabs.
+	 * Dynamically detect whether anything needs scrolling so we always
+	 * run the fast tick while any title/tab is scrolling. */
+	if (!title_scroll_mode) {
 		wl_event_source_timer_update(scroll_timer, 100);
 		return 0;
 	}
+
+	/* Detect whether any client or top-bar tab needs scrolling now. */
+	int needs_scroll = 0;
+	wl_list_for_each(c, &clients, link) {
+		if (c->needs_title_scroll) { needs_scroll = 1; break; }
+	}
+	if (!needs_scroll) {
+		/* Check top-bar tabs per monitor */
+		Monitor *m;
+		wl_list_for_each(m, &mons, link) {
+			int visible_count = 0;
+			Client *cc;
+			wl_list_for_each(cc, &clients, link) {
+				if (VISIBLEON(cc, m)) visible_count++;
+			}
+			if (visible_count <= 0) continue;
+
+			int width = m->m.width;
+			int n = 30 * cell_width; /* reserved for date/time */
+			int tab_area_width = width - /* x start unknown here; approximate */ (n + cell_width*10);
+			if (tab_area_width <= 0) continue;
+
+			int max_tab_chars = 20;
+			int tab_width_cells = max_tab_chars + 2;
+
+			wl_list_for_each(cc, &clients, link) {
+				if (!VISIBLEON(cc, m)) continue;
+				const char *title = client_get_title(cc);
+				if (!title) title = "?";
+				int title_len = 0; while (title[title_len]) title_len++;
+				int title_max = tab_width_cells - 2;
+				if (title_len > title_max - 1) { needs_scroll = 1; break; }
+			}
+			if (needs_scroll) break;
+		}
+	}
+
+	if (!needs_scroll) {
+		/* No scrolling needed, check again later */
+		any_title_needs_scroll = 0;
+		wl_event_source_timer_update(scroll_timer, 100);
+		return 0;
+	}
+	any_title_needs_scroll = 1;
 	
-	/* Advance scroll offset (~1 pixel per 33ms at speed 30) */
-	title_scroll_offset += 1;
+	/* Advance scroll offset according to `title_scroll_speed` (pixels/sec).
+	 * Use an accumulator to handle fractional pixels per tick. */
+	title_scroll_accum += title_scroll_speed * (33.0 / 1000.0);
+	int advance = (int)title_scroll_accum;
+	if (advance > 0) {
+		title_scroll_offset += advance;
+		title_scroll_accum -= advance;
+	}
 	
 	/* Only update windows that actually need scrolling */
 	wl_list_for_each(c, &clients, link) {
@@ -6344,14 +6398,14 @@ scrolltimer(void *data)
 	}
 
 	/* Also update the top bar so tabs in the bar scroll smoothly */
-	if (any_title_needs_scroll)
-		updatebars();
+	updatebars();
+
+	/* If no windows needed scrolling, clear the flag (bar may still scroll) */
+	if (scroll_count == 0) {
+		/* keep any_title_needs_scroll set because top-bar may still be scrolling */
+	}
 	
-	/* If no windows needed scrolling, reset the flag */
-	if (scroll_count == 0)
-		any_title_needs_scroll = 0;
-	
-	/* Continue at 30fps */
+	/* Continue at ~30fps */
 	wl_event_source_timer_update(scroll_timer, 33);
 	return 0;
 }
@@ -6972,71 +7026,74 @@ updaterepl(void)
 	int visible_lines;
 	const char *line;
 	
-	if (!selmon || !layers[LyrBg])
+	/* Render and attach REPL to every monitor */
+	if (!layers[LyrBg])
 		return;
-	
-	/* Hide REPL if not visible */
-	if (!repl_visible) {
-		if (repl_buffer)
-			wlr_scene_node_set_enabled(&repl_buffer->node, 0);
-		return;
-	}
-	
-	width = sgeom.width;
-	height = sgeom.height;
-	
-	if (width <= 0 || height <= 0)
-		return;
-	
-	/* Create buffer for REPL background */
-	tb = ecalloc(1, sizeof(*tb));
-	tb->stride = width * 4;
-	tb->data = ecalloc(1, tb->stride * height);
-	titlebuf_alloc_count++; wlr_buffer_init(&tb->base, &titlebuf_impl, width, height);
-	pixels = tb->data;
-	
-	/* Fill with background color */
-	for (i = 0; i < width * height; i++)
-		pixels[i] = RGB_TO_ARGB(cfg_bg_color);
-	
-	/* Calculate visible lines (leave space for bar at top) */
-	visible_lines = (height - cell_height) / cell_height;
-	
-	/* Render history lines from bottom up */
-	y = height - cell_height * 2;  /* Start from bottom, leave space for bar */
-	
-	for (i = 0; i < visible_lines && i + repl_scroll_offset < repl_history_count; i++) {
-		line_idx = repl_history_count - 1 - i - repl_scroll_offset;
-		if (line_idx < 0)
-			break;
-		
-		line = repl_history[line_idx];
-		x = cell_width;
-		
-		/* Render the line */
-		while (*line && x < width - cell_width) {
-			render_char_to_buffer(pixels, width, height, x, y, (unsigned char)*line, RGB_TO_ARGB(cfg_bg_text_color));
-			x += cell_width;
-			line++;
+
+	Monitor *m;
+	wl_list_for_each(m, &mons, link) {
+		/* Hide per-monitor REPL if not visible */
+		if (!repl_visible) {
+			if (m->repl)
+				wlr_scene_node_set_enabled(&m->repl->node, 0);
+			continue;
 		}
-		
-		y -= cell_height;
+
+		width = m->m.width;
+		height = m->m.height;
+		if (width <= 0 || height <= 0)
+			continue;
+
+		/* Create buffer for this monitor's REPL background */
+		tb = ecalloc(1, sizeof(*tb));
+		tb->stride = width * 4;
+		tb->data = ecalloc(1, tb->stride * height);
+		titlebuf_alloc_count++; wlr_buffer_init(&tb->base, &titlebuf_impl, width, height);
+		pixels = tb->data;
+
+		/* Fill with background color */
+		for (i = 0; i < width * height; i++)
+			pixels[i] = RGB_TO_ARGB(cfg_bg_color);
+
+		/* Calculate visible lines (leave space for bar at top) */
+		visible_lines = (height - cell_height) / cell_height;
+
+		/* Render history lines from bottom up */
+		y = height - cell_height * 2;  /* Start from bottom, leave space for bar */
+
+		for (i = 0; i < visible_lines && i + repl_scroll_offset < repl_history_count; i++) {
+			line_idx = repl_history_count - 1 - i - repl_scroll_offset;
+			if (line_idx < 0)
+				break;
+
+			line = repl_history[line_idx];
+			x = cell_width;
+
+			/* Render the line */
+			while (*line && x < width - cell_width) {
+				render_char_to_buffer(pixels, width, height, x, y, (unsigned char)*line, RGB_TO_ARGB(cfg_bg_text_color));
+				x += cell_width;
+				line++;
+			}
+
+			y -= cell_height;
+		}
+
+		/* Show scroll indicator if not at bottom */
+		if (repl_scroll_offset > 0) {
+			x = width - cell_width * 3;
+			render_char_to_buffer(pixels, width, height, x, height - cell_height * 2,
+				0x25BC, RGB_TO_ARGB(cfg_bg_text_color)); /* ▼ */
+		}
+
+		/* Create or update the per-monitor REPL buffer node */
+		if (!m->repl)
+			m->repl = wlr_scene_buffer_create(layers[LyrBg], NULL);
+		wlr_scene_node_set_enabled(&m->repl->node, 1);
+		wlr_scene_node_set_position(&m->repl->node, m->m.x, m->m.y);
+		wlr_scene_buffer_set_buffer(m->repl, &tb->base);
+		wlr_buffer_drop(&tb->base);
 	}
-	
-	/* Show scroll indicator if not at bottom */
-	if (repl_scroll_offset > 0) {
-		x = width - cell_width * 3;
-		render_char_to_buffer(pixels, width, height, x, height - cell_height * 2, 
-			0x25BC, RGB_TO_ARGB(cfg_bg_text_color)); /* ▼ */
-	}
-	
-	/* Create or update the REPL buffer */
-	if (!repl_buffer)
-		repl_buffer = wlr_scene_buffer_create(layers[LyrBg], NULL);
-	wlr_scene_node_set_enabled(&repl_buffer->node, 1);
-	wlr_scene_node_set_position(&repl_buffer->node, sgeom.x, sgeom.y);
-	wlr_scene_buffer_set_buffer(repl_buffer, &tb->base);
-	wlr_buffer_drop(&tb->base);
 }
 
 void
