@@ -170,6 +170,10 @@ typedef struct {
 	struct TitleBuffer *frame_right_buf;
 	int frame_width;  /* cached dimensions to detect resize */
 	int frame_height;
+	/* Pre-rendered scrolling title texture (rendered once, scrolled by offset) */
+	uint32_t *scroll_title_pixels;  /* Pre-rendered title + "  " separator */
+	int scroll_title_width;         /* Total width in pixels */
+	char scroll_title_hash[128];    /* Hash of title to detect changes */
 } Client;
 
 typedef struct {
@@ -2258,6 +2262,11 @@ destroynotify(struct wl_listener *listener, void *data)
 		wl_list_remove(&c->map.link);
 		wl_list_remove(&c->unmap.link);
 		wl_list_remove(&c->maximize.link);
+	}
+	/* Free pre-rendered scroll title buffer */
+	if (c->scroll_title_pixels) {
+		free(c->scroll_title_pixels);
+		c->scroll_title_pixels = NULL;
 	}
 	free(c);
 }
@@ -8016,6 +8025,85 @@ render_char_clipped(uint32_t *pixels, int buf_w, int buf_h, int x, int y,
 	}
 }
 
+/* Pre-render a scrolling title buffer (title + "  " separator).
+ * This is called once when the title changes, then we just blit
+ * portions of it during scroll updates - like DOS/TempleOS did. */
+static void
+ensure_scroll_title_buffer(Client *c, const char *title, uint32_t fg_color, uint32_t bg_color)
+{
+	int title_len = 0;
+	int scroll_chars, total_width, pos, i;
+	
+	/* Count UTF-8 characters */
+	while (title[title_len]) title_len++;
+	
+	/* Check if we need to regenerate (title changed) */
+	if (c->scroll_title_pixels && 
+	    strncmp(c->scroll_title_hash, title, sizeof(c->scroll_title_hash) - 1) == 0) {
+		return; /* Already have correct buffer */
+	}
+	
+	/* Free old buffer */
+	if (c->scroll_title_pixels) {
+		free(c->scroll_title_pixels);
+		c->scroll_title_pixels = NULL;
+	}
+	
+	/* Calculate buffer size: title chars + 2 separator spaces */
+	scroll_chars = 0;
+	pos = 0;
+	while (title[pos]) {
+		utf8_decode(title, &pos);
+		scroll_chars++;
+	}
+	scroll_chars += 2; /* "  " separator */
+	
+	total_width = scroll_chars * cell_width;
+	c->scroll_title_width = total_width;
+	
+	/* Allocate and fill with background */
+	c->scroll_title_pixels = malloc(total_width * cell_height * sizeof(uint32_t));
+	if (!c->scroll_title_pixels) return;
+	
+	for (i = 0; i < total_width * cell_height; i++)
+		c->scroll_title_pixels[i] = bg_color;
+	
+	/* Render title characters (uses glyph cache - fast) */
+	pos = 0;
+	i = 0;
+	while (title[pos]) {
+		unsigned long cp = utf8_decode(title, &pos);
+		render_char_to_buffer(c->scroll_title_pixels, total_width, cell_height,
+		                      i * cell_width, 0, cp, fg_color);
+		i++;
+	}
+	/* Separator spaces are already background-colored */
+	
+	/* Remember the title hash */
+	strncpy(c->scroll_title_hash, title, sizeof(c->scroll_title_hash) - 1);
+	c->scroll_title_hash[sizeof(c->scroll_title_hash) - 1] = '\0';
+}
+
+/* Fast blit from pre-rendered scroll buffer to frame buffer.
+ * This is the key optimization: just memcpy, no FreeType. */
+static void
+blit_scroll_title(Client *c, uint32_t *dest, int dest_width, int dest_x, 
+                  int display_width, int pixel_offset)
+{
+	int py, px, src_px;
+	
+	if (!c->scroll_title_pixels || c->scroll_title_width <= 0)
+		return;
+	
+	for (py = 0; py < cell_height; py++) {
+		for (px = 0; px < display_width; px++) {
+			src_px = (pixel_offset + px) % c->scroll_title_width;
+			dest[py * dest_width + (dest_x + px)] = 
+				c->scroll_title_pixels[py * c->scroll_title_width + src_px];
+		}
+	}
+}
+
 void
 updateframe(Client *c)
 {
@@ -8196,48 +8284,25 @@ updateframe(Client *c)
 		title_x = title_start_cell * cell_width;
 		
 		if (needs_overflow && title_scroll_mode) {
-			/* Smooth pixel-based scrolling: title + "  " loops around */
-			int scroll_chars = title_len + 2; /* +2 for "  " separator */
-			int total_scroll_width = scroll_chars * cell_width;
-			int pixel_offset = title_scroll_offset % total_scroll_width;
+			/* FAST PATH: Use pre-rendered scroll buffer.
+			 * Render title once when it changes, then just blit portions.
+			 * This is how DOS/TempleOS did scrolling text - pure memcpy. */
+			int total_scroll_width;
+			int pixel_offset;
 			int display_width = avail_cells * cell_width;
 			int bg_end = title_x + display_width;
 			if (bg_end > title_right_px)
 				bg_end = title_right_px;
+			display_width = bg_end - title_x;
 			
-			/* Fill background for display area */
-			for (py = 0; py < cell_height; py++) {
-				for (px = title_x; px < bg_end; px++) {
-					pixels[py * width + px] = title_bg;
-				}
-			}
+			/* Ensure pre-rendered scroll buffer exists */
+			ensure_scroll_title_buffer(c, title, title_fg, title_bg);
 			
-			/* Render characters at pixel-offset positions with clipping */
-			{
-				int char_idx;
-				int draw_x;
-				int clip_left = title_x;
-				int clip_right = bg_end;
-				for (char_idx = 0; char_idx < scroll_chars + avail_cells; char_idx++) {
-					int src_char = char_idx % scroll_chars;
-					int char_pixel_pos = char_idx * cell_width - pixel_offset;
-					unsigned long cp;
-					draw_x = title_x + char_pixel_pos;
-					
-					if (src_char < title_len) {
-						/* Get character from title */
-						int pos = 0;
-						int ci = 0;
-						while (ci < src_char && title[pos]) {
-							utf8_decode(title, &pos);
-							ci++;
-						}
-						cp = title[pos] ? utf8_decode(title, &pos) : ' ';
-					} else {
-						cp = ' '; /* separator spaces */
-					}
-					render_char_clipped(pixels, width, cell_height, draw_x, 0, cp, title_fg, clip_left, clip_right);
-				}
+			if (c->scroll_title_pixels && c->scroll_title_width > 0) {
+				/* Fast blit from pre-rendered buffer - no FreeType calls! */
+				total_scroll_width = c->scroll_title_width;
+				pixel_offset = title_scroll_offset % total_scroll_width;
+				blit_scroll_title(c, pixels, width, title_x, display_width, pixel_offset);
 			}
 		} else if (needs_overflow) {
 			/* Truncate mode with ellipsis */
