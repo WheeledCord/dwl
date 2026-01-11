@@ -646,7 +646,6 @@ static int title_scroll_mode = 1;        /* 0 = truncate with ..., 1 = scroll */
 static int title_scroll_speed = 30;      /* pixels per second */
 static struct wl_event_source *scroll_timer = NULL;
 static int any_title_needs_scroll = 0;   /* track if any title needs scrolling */
-static double title_scroll_accum = 0.0;  /* fractional pixel accumulator for scroll */
 static int scroll_only_bar_update = 0;   /* 1 = only update scrolling tabs, skip static */
 
 /* REPL state */
@@ -2406,6 +2405,16 @@ destroynotify(struct wl_listener *listener, void *data)
 	if (c->scroll_title_pixels) {
 		free(c->scroll_title_pixels);
 		c->scroll_title_pixels = NULL;
+	}
+	/* Free scroll scene buffer */
+	if (c->scroll_scene_buf) {
+		wlr_scene_buffer_set_buffer(c->scroll_scene_buf, NULL);
+		wlr_scene_node_destroy(&c->scroll_scene_buf->node);
+		c->scroll_scene_buf = NULL;
+	}
+	if (c->scroll_buf) {
+		wlr_buffer_drop(&c->scroll_buf->base);
+		c->scroll_buf = NULL;
 	}
 	free(c);
 }
@@ -8328,45 +8337,89 @@ blit_scroll_title(Client *c, uint32_t *dest, int dest_width, int dest_x,
 }
 
 /* Create/update a dedicated scene buffer for scroll overlay.
- * NOT USED - source_box approach causes issues, using direct blit instead. */
+ * Uses source_box panning - zero memcpy per frame! */
 static void
 setup_scroll_scene_buffer(Client *c, uint32_t fg_color, uint32_t bg_color)
 {
-	/* Intentionally empty - keeping function for ABI compatibility */
-	(void)c; (void)fg_color; (void)bg_color;
+	int total_width;
+	struct wlr_fbox src_box;
+	
+	if (!c || !c->scroll_title_pixels || c->scroll_title_width <= 0)
+		return;
+	if (c->scroll_display_width <= 0 || c->scroll_dest_x <= 0)
+		return;
+	
+	total_width = c->scroll_title_width * 2;
+	
+	/* Create TitleBuffer if needed - check base.width for dimensions */
+	if (!c->scroll_buf || c->scroll_buf->base.width != total_width || 
+	    c->scroll_buf->base.height != cell_height) {
+		if (c->scroll_buf) {
+			if (c->scroll_scene_buf) {
+				wlr_scene_buffer_set_buffer(c->scroll_scene_buf, NULL);
+			}
+			wlr_buffer_drop(&c->scroll_buf->base);
+			c->scroll_buf = NULL;
+		}
+		/* Allocate TitleBuffer inline (same pattern as frame_top_buf) */
+		c->scroll_buf = ecalloc(1, sizeof(*c->scroll_buf));
+		c->scroll_buf->stride = total_width * 4;
+		c->scroll_buf->data = ecalloc(1, c->scroll_buf->stride * cell_height);
+		wlr_buffer_init(&c->scroll_buf->base, &titlebuf_impl, total_width, cell_height);
+		titlebuf_alloc_count++;
+	}
+	
+	/* Copy pre-rendered pixels to the buffer */
+	memcpy(c->scroll_buf->data, c->scroll_title_pixels, 
+	       total_width * cell_height * sizeof(uint32_t));
+	
+	/* Create scene buffer if needed */
+	if (!c->scroll_scene_buf) {
+		c->scroll_scene_buf = wlr_scene_buffer_create(c->scene, NULL);
+		if (!c->scroll_scene_buf) return;
+	}
+	
+	/* Position the overlay exactly over the title area in the frame */
+	wlr_scene_node_set_position(&c->scroll_scene_buf->node, 
+	                            c->scroll_dest_x, 0);
+	
+	/* Set buffer and initial source box */
+	wlr_scene_buffer_set_buffer(c->scroll_scene_buf, &c->scroll_buf->base);
+	wlr_scene_buffer_set_dest_size(c->scroll_scene_buf, 
+	                               c->scroll_display_width, cell_height);
+	
+	/* Set source box to show first portion of the 2x buffer */
+	src_box.x = 0;
+	src_box.y = 0;
+	src_box.width = c->scroll_display_width;
+	src_box.height = cell_height;
+	wlr_scene_buffer_set_source_box(c->scroll_scene_buf, &src_box);
 }
 
-/* FAST PATH: Just update the scroll pixels in the existing frame buffer.
- * We modify the buffer in-place and use wlr_scene_buffer_set_buffer_with_damage
- * to tell wlroots ONLY the title region changed, minimizing compositor work.
+/* FAST PATH: Pan the source_box in the pre-rendered scroll buffer.
+ * ZERO memcpy - just shifts a rectangle coordinate in the GPU texture!
  * Returns 1 if fast path succeeded, 0 if full update needed. */
 static int
 update_scroll_only(Client *c)
 {
 	int pixel_offset;
-	uint32_t *pixels;
-	pixman_region32_t damage;
+	struct wlr_fbox src_box;
 	
-	if (!c || !c->frame_top_buf || !c->scroll_title_pixels)
+	if (!c || !c->scroll_scene_buf || !c->scroll_title_pixels)
 		return 0;
 	if (!c->needs_title_scroll || c->scroll_title_width <= 0)
 		return 0;
-	if (c->scroll_display_width <= 0 || c->scroll_dest_x <= 0)
+	if (c->scroll_display_width <= 0)
 		return 0;
 	
-	pixels = c->frame_top_buf->data;
 	pixel_offset = title_scroll_offset % c->scroll_title_width;
 	
-	/* Just blit the new scroll position - nothing else! */
-	blit_scroll_title(c, pixels, c->geom.width, c->scroll_dest_x,
-	                  c->scroll_display_width, pixel_offset);
-	
-	/* Tell wlroots ONLY the title region changed, not the whole buffer */
-	pixman_region32_init_rect(&damage, c->scroll_dest_x, 0, 
-	                          c->scroll_display_width, cell_height);
-	wlr_scene_buffer_set_buffer_with_damage(c->frame_top, 
-	                                        &c->frame_top_buf->base, &damage);
-	pixman_region32_fini(&damage);
+	/* Just shift the source_box - NO pixel copying! */
+	src_box.x = pixel_offset;
+	src_box.y = 0;
+	src_box.width = c->scroll_display_width;
+	src_box.height = cell_height;
+	wlr_scene_buffer_set_source_box(c->scroll_scene_buf, &src_box);
 	
 	return 1;
 }
