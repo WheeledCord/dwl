@@ -174,6 +174,9 @@ typedef struct {
 	uint32_t *scroll_title_pixels;  /* Pre-rendered title + "  " separator */
 	int scroll_title_width;         /* Total width in pixels */
 	char scroll_title_hash[128];    /* Hash of title to detect changes */
+	/* Cached scroll region coordinates for fast scroll-only updates */
+	int scroll_dest_x;              /* X offset in frame buffer where title goes */
+	int scroll_display_width;       /* Width of visible title area */
 } Client;
 
 typedef struct {
@@ -444,6 +447,7 @@ static void repl_eval(void);
 static int replkey(xkb_keysym_t sym);
 static void updateframe(Client *c);
 static void updateframes(void);
+static void update_scroll_only(Client *c);
 
 static void startdrag(struct wl_listener *listener, void *data);
 static void tag(const Arg *arg);
@@ -6634,7 +6638,7 @@ scrolltimer(void *data)
 	/* Advance scroll offset according to `title_scroll_speed` (pixels/sec).
 	 * Timer runs at 10fps (100ms) for low CPU usage - fits retro aesthetic.
 	 * Use an accumulator to handle fractional pixels per tick. */
-	title_scroll_accum += title_scroll_speed * (100.0 / 1000.0);
+	title_scroll_accum += title_scroll_speed * (33.0 / 1000.0);
 	int advance = (int)title_scroll_accum;
 	if (advance > 0) {
 		title_scroll_offset += advance;
@@ -6642,28 +6646,24 @@ scrolltimer(void *data)
 	} else {
 		/* No pixel advancement this tick - skip all rendering work.
 		 * This is the key optimization: only redraw when scroll moves. */
-		wl_event_source_timer_update(scroll_timer, 100);
+		wl_event_source_timer_update(scroll_timer, 33);
 		return 0;
 	}
 	
-	/* Only update windows that actually need scrolling */
+	/* FAST PATH: Only update the scrolling title region, not the whole frame.
+	 * This is how old DOS systems achieved smooth scrolling without high CPU. */
 	wl_list_for_each(c, &clients, link) {
 		if (c->needs_title_scroll) {
-			updateframe(c);
+			update_scroll_only(c);
 			scroll_count++;
 		}
 	}
 
-	/* Also update the top bar so tabs in the bar scroll smoothly */
-	updatebars();
-
-	/* If no windows needed scrolling, clear the flag (bar may still scroll) */
-	if (scroll_count == 0) {
-		/* keep any_title_needs_scroll set because top-bar may still be scrolling */
-	}
+	/* TODO: Top bar tabs still need optimization - for now skip bar updates
+	 * during scroll ticks to reduce CPU. Bar titles don't need per-pixel scroll. */
 	
-	/* Continue at ~10fps - low CPU, fits retro aesthetic */
-	wl_event_source_timer_update(scroll_timer, 100);
+	/* Continue at ~30fps for smooth scrolling */
+	wl_event_source_timer_update(scroll_timer, 33);
 	return 0;
 }
 
@@ -8110,6 +8110,33 @@ blit_scroll_title(Client *c, uint32_t *dest, int dest_width, int dest_x,
 	}
 }
 
+/* FAST PATH: Update only the scrolling title region without re-rendering
+ * the entire frame. This is how old DOS systems did smooth scrolling -
+ * just change the read offset and blit, no re-rendering. */
+static void
+update_scroll_only(Client *c)
+{
+	uint32_t *pixels;
+	int pixel_offset;
+	
+	if (!c || !c->frame_top_buf || !c->scroll_title_pixels)
+		return;
+	if (!c->needs_title_scroll || c->scroll_title_width <= 0)
+		return;
+	if (c->scroll_display_width <= 0)
+		return;
+	
+	pixels = c->frame_top_buf->data;
+	pixel_offset = title_scroll_offset % c->scroll_title_width;
+	
+	/* Just blit the new scroll position - nothing else! */
+	blit_scroll_title(c, pixels, c->geom.width, c->scroll_dest_x,
+	                  c->scroll_display_width, pixel_offset);
+	
+	/* Tell wlroots the buffer changed */
+	wlr_scene_buffer_set_buffer(c->frame_top, &c->frame_top_buf->base);
+}
+
 void
 updateframe(Client *c)
 {
@@ -8300,6 +8327,10 @@ updateframe(Client *c)
 			if (bg_end > title_right_px)
 				bg_end = title_right_px;
 			display_width = bg_end - title_x;
+			
+			/* Cache scroll region coordinates for fast scroll-only updates */
+			c->scroll_dest_x = title_x;
+			c->scroll_display_width = display_width;
 			
 			/* Ensure pre-rendered scroll buffer exists */
 			ensure_scroll_title_buffer(c, title, title_fg, title_bg);
