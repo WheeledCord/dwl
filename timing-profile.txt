@@ -1,0 +1,23 @@
+Loaded fallback font: /usr/share/fonts/tbwm/unscii-8x16.ttf
+Grid: 8x16 cells (font: /usr/share/fonts/tbwm/PxPlus_IBM_VGA_8x16.ttf)
+Built app cache: 3159 entries
+tbwm: installed foot config at /home/fionn/.config/foot/foot.ini
+
+tbwm: s7 Scheme 11.7 initialized
+
+00:00:00.107 [ERROR] [EGL] command: eglQueryDevicesEXT, error: EGL_BAD_ALLOC (0x3003), message: "EGL_BAD_ALLOC error: In eglQueryDevicesEXT: Failed to allocate device list.
+"
+00:00:00.108 [ERROR] [EGL] command: eglQueryDevicesEXT, error: EGL_BAD_ALLOC (0x3003), message: "EGL_BAD_ALLOC error: In eglQueryDevicesEXT: Failed to allocate device list.
+"
+tbwm: loading config from /home/fionn/.config/tbwm/config.scm
+
+tbwm: clearing 0 scheme bindings and 0 mouse bindings before loading config
+
+tbwm-scm: unknown key: 
+tbwm-scm: unknown key: ;
+tbwm-scm: TurboWM config loaded!
+
+tbwm: XWayland started on DISPLAY=:1
+
+tbwm: WAYLAND_DISPLAY=wayland-0 DISPLAY=:1
+

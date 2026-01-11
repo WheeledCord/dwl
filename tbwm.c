@@ -252,6 +252,8 @@ struct Monitor {
 	struct wlr_scene_buffer *repl; /* rendered REPL output for this monitor */
 	struct TitleBuffer *bar_buf;  /* cached bar buffer for reuse */
 	int bar_width;                /* cached width to detect resize */
+	int bar_tabs_start_x;         /* x position where tabs begin (for scroll-only updates) */
+	int bar_tabs_end_x;           /* x position where tabs end */
 	struct wl_listener frame;
 	struct wl_listener destroy;
 	struct wl_listener request_state;
@@ -438,6 +440,7 @@ static void updatebar(Monitor *m);
 static void updatebars(void);
 static void updateappmenu(void);
 static int appmenu_item_count(void);
+static int timingtimer(void *data);
 static int bartimer(void *data);
 static int scrolltimer(void *data);
 static void togglelauncher(const Arg *arg);
@@ -505,18 +508,146 @@ static int launcher_selection = 0;
 static char **app_cache = NULL;
 static int app_cache_count = 0;
 
+/* ==================== COMPREHENSIVE PERFORMANCE TIMING ==================== */
+typedef struct {
+	const char *name;
+	long total_us;
+	long max_us;
+	long min_us;
+	int call_count;
+	struct timespec start;
+} TimingStat;
+
+#define MAX_TIMING_STATS 32
+static TimingStat timing_stats[MAX_TIMING_STATS];
+static int timing_count = 0;
+static struct timespec last_timing_report = {0};
+
+#define TIMING_SCROLLTIMER 0
+#define TIMING_UPDATEBARS 1
+#define TIMING_UPDATEBAR 2
+#define TIMING_RENDERMON 3
+#define TIMING_UPDATEFRAME 4
+#define TIMING_RENDER_CHAR 5
+#define TIMING_GET_GLYPH 6
+#define TIMING_KEYBINDING 7
+#define TIMING_RENDER_PASS 8
+
+static void timing_init(void) {
+	timing_stats[TIMING_SCROLLTIMER] = (TimingStat){"scrolltimer", 0, 0, LLONG_MAX, 0, {0}};
+	timing_stats[TIMING_UPDATEBARS] = (TimingStat){"updatebars", 0, 0, LLONG_MAX, 0, {0}};
+	timing_stats[TIMING_UPDATEBAR] = (TimingStat){"updatebar", 0, 0, LLONG_MAX, 0, {0}};
+	timing_stats[TIMING_RENDERMON] = (TimingStat){"rendermon", 0, 0, LLONG_MAX, 0, {0}};
+	timing_stats[TIMING_UPDATEFRAME] = (TimingStat){"updateframe", 0, 0, LLONG_MAX, 0, {0}};
+	timing_stats[TIMING_RENDER_CHAR] = (TimingStat){"render_char", 0, 0, LLONG_MAX, 0, {0}};
+	timing_stats[TIMING_GET_GLYPH] = (TimingStat){"get_glyph", 0, 0, LLONG_MAX, 0, {0}};
+	timing_stats[TIMING_KEYBINDING] = (TimingStat){"keybinding", 0, 0, LLONG_MAX, 0, {0}};
+	timing_stats[TIMING_RENDER_PASS] = (TimingStat){"render_pass", 0, 0, LLONG_MAX, 0, {0}};
+	timing_count = 9;
+}
+
+static inline void timing_start(int idx) {
+	if (idx < 0 || idx >= timing_count) return;
+	clock_gettime(CLOCK_MONOTONIC, &timing_stats[idx].start);
+}
+
+static inline void timing_end(int idx) {
+	struct timespec end;
+	long us;
+	if (idx < 0 || idx >= timing_count) return;
+	clock_gettime(CLOCK_MONOTONIC, &end);
+	us = (end.tv_sec - timing_stats[idx].start.tv_sec) * 1000000 +
+	     (end.tv_nsec - timing_stats[idx].start.tv_nsec) / 1000;
+	if (us < 0) us = 0;
+	if (us > 10000000) return; /* Skip outliers > 10s */
+	timing_stats[idx].total_us += us;
+	if (us > timing_stats[idx].max_us) timing_stats[idx].max_us = us;
+	if (us < timing_stats[idx].min_us) timing_stats[idx].min_us = us;
+	timing_stats[idx].call_count++;
+}
+
+static void timing_report(void) {
+	struct timespec now;
+	long elapsed_ns;
+	int i, j;
+	typedef struct { int idx; long pct; } SortEntry;
+	SortEntry sorted[MAX_TIMING_STATS];
+	long total_cpu = 0;
+	FILE *fp = fopen("/tmp/tbwm-timing.txt", "a");
+	if (!fp) return;
+	
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	if (last_timing_report.tv_sec == 0) {
+		last_timing_report = now;
+		fclose(fp);
+		return;
+	}
+	/* Check if 500ms have elapsed */
+	elapsed_ns = (now.tv_sec - last_timing_report.tv_sec) * 1000000000 + 
+	                  (now.tv_nsec - last_timing_report.tv_nsec);
+	if (elapsed_ns < 500000000) { fclose(fp); return; }  /* Report every 500ms */
+	
+	/* Calculate total CPU time */
+	for (i = 0; i < timing_count; i++) {
+		total_cpu += timing_stats[i].total_us;
+	}
+	
+	/* Sort by CPU usage (simple bubble sort) */
+	for (i = 0; i < timing_count; i++) {
+		sorted[i].idx = i;
+		sorted[i].pct = timing_stats[i].total_us;
+	}
+	for (i = 0; i < timing_count - 1; i++) {
+		for (j = 0; j < timing_count - i - 1; j++) {
+			if (sorted[j].pct < sorted[j+1].pct) {
+				SortEntry tmp = sorted[j];
+				sorted[j] = sorted[j+1];
+				sorted[j+1] = tmp;
+			}
+		}
+	}
+	
+	fprintf(fp, "\n╔════════════════════════════════ CPU PROFILE ════════════════════════════════╗\n");
+	fprintf(fp, "║ Period: %.0f ms | Total CPU: %.1fms\n", elapsed_ns / 1000000.0, total_cpu / 1000.0);
+	fprintf(fp, "╠════════════════════════════════════════════════════════════════════════════════╣\n");
+	
+	for (i = 0; i < timing_count; i++) {
+		int idx = sorted[i].idx;
+		if (timing_stats[idx].call_count == 0) continue;
+		long avg_us = timing_stats[idx].total_us / timing_stats[idx].call_count;
+		long pct = (timing_stats[idx].total_us * 100) / (total_cpu > 0 ? total_cpu : 1);
+		fprintf(fp, "║ %-20s: %3ld%% [%6ld calls | %7.2fms total | %5.1fμs avg | %6ldμs max]\n",
+			timing_stats[idx].name,
+			pct,
+			(long)timing_stats[idx].call_count,
+			timing_stats[idx].total_us / 1000.0,
+			(float)avg_us,
+			timing_stats[idx].max_us);
+		timing_stats[idx].total_us = 0;
+		timing_stats[idx].max_us = 0;
+		timing_stats[idx].min_us = LLONG_MAX;
+		timing_stats[idx].call_count = 0;
+	}
+	fprintf(fp, "╚════════════════════════════════════════════════════════════════════════════════╝\n\n");
+	fflush(fp);
+	fclose(fp);
+	last_timing_report = now;
+}
+
 /* Signal handling helpers: set by signal handler and used from main loop */
 static volatile sig_atomic_t exit_requested = 0;
 static int signal_fd = -1;
 static struct wl_event_source *signal_fd_source = NULL;
 
 static struct wl_event_source *bar_timer = NULL;
+static struct wl_event_source *timing_timer = NULL;  /* dedicated timing report timer */
 static uint32_t title_scroll_offset = 0; /* pixel offset for smooth title scrolling */
 static int title_scroll_mode = 1;        /* 0 = truncate with ..., 1 = scroll */
 static int title_scroll_speed = 30;      /* pixels per second */
 static struct wl_event_source *scroll_timer = NULL;
 static int any_title_needs_scroll = 0;   /* track if any title needs scrolling */
 static double title_scroll_accum = 0.0;  /* fractional pixel accumulator for scroll */
+static int scroll_only_bar_update = 0;   /* 1 = only update scrolling tabs, skip static */
 
 /* REPL state */
 static int repl_visible = 1;             /* 1 = REPL background/text visible */
@@ -4251,8 +4382,19 @@ rendermon(struct wl_listener *listener, void *data)
 	Client *c;
 	struct wlr_output_state pending = {0};
 	struct timespec now;
+	bool needs_commit = false;
 
 	clock_gettime(CLOCK_MONOTONIC, &now);
+
+	/* Check if scene needs a commit (has pending damage) */
+	needs_commit = wlr_scene_output_needs_frame(m->scene_output);
+	if (!needs_commit) {
+		/* No damage - just send frame done to clients, skip GPU work */
+		wlr_scene_output_send_frame_done(m->scene_output, &now);
+		return;
+	}
+
+	timing_start(TIMING_RENDERMON);
 
 	/* Render if no XDG clients have an outstanding resize and are visible on
 	 * this monitor. */
@@ -4267,6 +4409,7 @@ skip:
 	/* Let clients know a frame has been rendered */
 	wlr_scene_output_send_frame_done(m->scene_output, &now);
 	wlr_output_state_finish(&pending);
+	timing_end(TIMING_RENDERMON);
 }
 
 void
@@ -4453,6 +4596,10 @@ run(char *startup_cmd)
 	/* Start scroll timer (33ms = ~30fps for smooth scrolling) */
 	scroll_timer = wl_event_loop_add_timer(event_loop, scrolltimer, NULL);
 	wl_event_source_timer_update(scroll_timer, 33);
+
+	/* Start timing report timer (every 500ms) */
+	timing_timer = wl_event_loop_add_timer(event_loop, timingtimer, NULL);
+	wl_event_source_timer_update(timing_timer, 500);
 
 	/* Run on-startup commands from config */
 	run_startup_commands();
@@ -4677,7 +4824,10 @@ setup(void)
 	} else {
 		tbwm_log(TBWM_LOG_INFO, "tbwm: s7 Scheme %s initialized\n", S7_VERSION);
 		setup_scheme();
-	} 
+	}
+
+	/* Initialize comprehensive CPU profiling */
+	timing_init();
 
 	/* The Wayland display is managed by libwayland. It handles accepting
 	 * clients from the Unix socket, manging Wayland globals, and so on. */
@@ -6573,6 +6723,17 @@ buildappcache(void)
 }
 
 int
+timingtimer(void *data)
+{
+	/* Report CPU timing statistics every 500ms */
+	fprintf(stderr, "[TIMING TICK]\n");
+	fflush(stderr);
+	timing_report();
+	wl_event_source_timer_update(timing_timer, 500);
+	return 0;
+}
+
+int
 bartimer(void *data)
 {
 	/* Used for clock updates */
@@ -6632,39 +6793,39 @@ scrolltimer(void *data)
 	}
 
 	if (!needs_scroll) {
-		/* No scrolling needed, check again later */
+		/* No scrolling needed, check again much later (200ms) */
 		any_title_needs_scroll = 0;
-		wl_event_source_timer_update(scroll_timer, 33);
+		wl_event_source_timer_update(scroll_timer, 200);
 		return 0;
 	}
 	any_title_needs_scroll = 1;
 	
-	/* Advance scroll offset according to `title_scroll_speed` (pixels/sec).
-	 * Use an accumulator to handle fractional pixels per tick. */
-	title_scroll_accum += title_scroll_speed * (33.0 / 1000.0);
-	int advance = (int)title_scroll_accum;
-	if (advance > 0) {
-		title_scroll_offset += advance;
-		title_scroll_accum -= advance;
-	} else {
-		/* No pixel advancement this tick - skip all rendering work. */
-		wl_event_source_timer_update(scroll_timer, 33);
-		return 0;
-	}
+	timing_start(TIMING_SCROLLTIMER);
 	
-	/* FAST PATH: Only update the scrolling title region, not the whole frame.
-	 * If fast path fails (not initialized), fall back to full updateframe. */
+	/* Advance scroll offset - one pixel per tick at 30fps */
+	title_scroll_offset++;
+	
+	/* Update window frames that need scrolling */
 	wl_list_for_each(c, &clients, link) {
 		if (c->needs_title_scroll) {
 			if (!update_scroll_only(c)) {
-				/* Fast path not ready - do full update to initialize */
 				updateframe(c);
 			}
 			scroll_count++;
 		}
 	}
+	
+	/* Update the bar tabs only - skip if no visible monitors need it */
+	if (scroll_count > 0 || any_title_needs_scroll) {
+		scroll_only_bar_update = 1;
+		updatebars();
+		scroll_only_bar_update = 0;
+	}
 
-	/* Continue at ~30fps for smooth scrolling */
+	timing_end(TIMING_SCROLLTIMER);
+	timing_report();
+
+	/* 30fps */
 	wl_event_source_timer_update(scroll_timer, 33);
 	return 0;
 }
@@ -6673,13 +6834,20 @@ void
 updatebars(void)
 {
 	Monitor *m;
+	
+	timing_start(TIMING_UPDATEBARS);
+	
 	/* Don't update if not fully initialized */
-	if (!layers[LyrOverlay])
+	if (!layers[LyrOverlay]) {
+		timing_end(TIMING_UPDATEBARS);
 		return;
+	}
 	/* Reset scroll flag - will be set by updatebar/updateframe if needed */
 	any_title_needs_scroll = 0;
 	wl_list_for_each(m, &mons, link)
 		updatebar(m);
+	
+	timing_end(TIMING_UPDATEBARS);
 }
 
 void
@@ -7373,8 +7541,12 @@ updatebar(Monitor *m)
 	int visible_count = 0;
 	int tab_area_width, tab_width_cells;
 
-	if (!m || !m->wlr_output || !m->wlr_output->enabled)
+	timing_start(TIMING_UPDATEBAR);
+
+	if (!m || !m->wlr_output || !m->wlr_output->enabled) {
+		timing_end(TIMING_UPDATEBAR);
 		return;
+	}
 	
 	/* Don't update bar if scene isn't ready */
 	if (!layers[LyrOverlay])
@@ -7404,11 +7576,26 @@ updatebar(Monitor *m)
 	tb = m->bar_buf;
 	pixels = tb->data;
 
-	/* Fill background */
-	for (i = 0; i < width * cell_height; i++)
-		pixels[i] = RGB_TO_ARGB(cfg_bar_color);
+	/* Fill background - skip if scroll-only update */
+	if (!scroll_only_bar_update) {
+		for (i = 0; i < width * cell_height; i++)
+			pixels[i] = RGB_TO_ARGB(cfg_bar_color);
+	}
 
 	x = 0;
+
+	/* Scroll-only update: skip static content, jump to tabs */
+	if (scroll_only_bar_update && !repl_input_active && !launcher_active && m->bar_tabs_start_x > 0) {
+		x = m->bar_tabs_start_x;
+		/* Clear only tab area */
+		int tab_end = m->bar_tabs_end_x > 0 ? m->bar_tabs_end_x : (width - 30 * cell_width);
+		for (i = 0; i < cell_height; i++) {
+			for (j = x; j < tab_end && j < width; j++) {
+				pixels[i * width + j] = RGB_TO_ARGB(cfg_bar_color);
+			}
+		}
+		goto render_tabs;
+	}
 
 	if (repl_input_active) {
 		/* === REPL INPUT MODE === */
@@ -7547,6 +7734,10 @@ updatebar(Monitor *m)
 		render_char_to_buffer(pixels, width, cell_height, x, 0, '|', RGB_TO_ARGB(cfg_bar_text_color));
 		x += cell_width * 2;
 
+render_tabs:
+		/* Save tab start position for scroll-only updates */
+		m->bar_tabs_start_x = x;
+
 		/* Window tabs */
 		visible_count = 0;
 		wl_list_for_each(c, &clients, link) {
@@ -7665,6 +7856,13 @@ updatebar(Monitor *m)
 			}
 		}
 
+		/* Save tab end position for scroll-only updates */
+		m->bar_tabs_end_x = x;
+
+		/* Skip status area during scroll-only update */
+		if (scroll_only_bar_update)
+			goto bar_done;
+
 		/* Right-align status: custom text OR date/time */
 		now = time(NULL);
 		tm_info = localtime(&now);
@@ -7730,11 +7928,22 @@ updatebar(Monitor *m)
 		}
 	}
 
+bar_done:
 	/* Set the bar buffer */
 	if (!m->bar)
 		m->bar = wlr_scene_buffer_create(layers[LyrTop], NULL);
 	wlr_scene_node_set_position(&m->bar->node, m->m.x, m->m.y);
-	wlr_scene_buffer_set_buffer(m->bar, &tb->base);
+	
+	/* Use damage tracking for scroll-only updates */
+	if (scroll_only_bar_update && m->bar_tabs_start_x > 0 && m->bar_tabs_end_x > m->bar_tabs_start_x) {
+		pixman_region32_t damage;
+		pixman_region32_init_rect(&damage, m->bar_tabs_start_x, 0, 
+			m->bar_tabs_end_x - m->bar_tabs_start_x, cell_height);
+		wlr_scene_buffer_set_buffer_with_damage(m->bar, &tb->base, &damage);
+		pixman_region32_fini(&damage);
+	} else {
+		wlr_scene_buffer_set_buffer(m->bar, &tb->base);
+	}
 	/* Don't drop - we're caching the buffer for reuse */
 
 	/* Hide bar when a fullscreen client is focused (configurable) */
@@ -7743,6 +7952,8 @@ updatebar(Monitor *m)
 		wlr_scene_node_set_enabled(&m->bar->node, !(fc && fc->isfullscreen));
 	else
 		wlr_scene_node_set_enabled(&m->bar->node, 1);
+
+	timing_end(TIMING_UPDATEBAR);
 }
 
 /* Check if there's an adjacent tiled window in the given direction.
