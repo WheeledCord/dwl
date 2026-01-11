@@ -6632,12 +6632,18 @@ scrolltimer(void *data)
 	any_title_needs_scroll = 1;
 	
 	/* Advance scroll offset according to `title_scroll_speed` (pixels/sec).
+	 * Timer runs at 10fps (100ms) for low CPU usage - fits retro aesthetic.
 	 * Use an accumulator to handle fractional pixels per tick. */
-	title_scroll_accum += title_scroll_speed * (33.0 / 1000.0);
+	title_scroll_accum += title_scroll_speed * (100.0 / 1000.0);
 	int advance = (int)title_scroll_accum;
 	if (advance > 0) {
 		title_scroll_offset += advance;
 		title_scroll_accum -= advance;
+	} else {
+		/* No pixel advancement this tick - skip all rendering work.
+		 * This is the key optimization: only redraw when scroll moves. */
+		wl_event_source_timer_update(scroll_timer, 100);
+		return 0;
 	}
 	
 	/* Only update windows that actually need scrolling */
@@ -6656,8 +6662,8 @@ scrolltimer(void *data)
 		/* keep any_title_needs_scroll set because top-bar may still be scrolling */
 	}
 	
-	/* Continue at ~30fps */
-	wl_event_source_timer_update(scroll_timer, 33);
+	/* Continue at ~10fps - low CPU, fits retro aesthetic */
+	wl_event_source_timer_update(scroll_timer, 100);
 	return 0;
 }
 
