@@ -349,6 +349,11 @@ static void file_debug_log(const char *fmt, ...);
 #define TBWM_LOG_ERROR 3
 static void tbwm_log(int level, const char *fmt, ...);
 
+/* Forward declarations for safe helper wrappers added later in file */
+static void safe_scene_node_reparent(struct wlr_scene_node *node, struct wlr_scene_tree *target, const char *ctx);
+static void safe_raise_tree(struct wlr_scene_tree *tree, const char *ctx);
+static void safe_raise_node(struct wlr_scene_node *node, const char *ctx);
+
 /* Simple file logger for debugging when running in a graphical session */
 static void
 file_debug_log(const char *fmt, ...)
@@ -538,6 +543,7 @@ static int cfg_tagcount = 9;
 static int cfg_show_time = 1;          /* Show time in status bar */
 static int cfg_show_date = 1;          /* Show date in status bar */
 static char cfg_status_text[256] = ""; /* Custom status text (overrides date/time if set) */
+static int cfg_bar_autohide = 1;       /* Hide bar when a client is fullscreen */
 
 /* Colors (#RRGGBB format, alpha added at render time)
  * cfg_bg_color          = root/REPL background (black)
@@ -738,6 +744,37 @@ static struct wlr_virtual_pointer_manager_v1 *virtual_pointer_mgr;
 static struct wlr_cursor_shape_manager_v1 *cursor_shape_mgr;
 static struct wlr_output_power_manager_v1 *power_mgr;
 
+/* Defensive helpers to avoid crashes from unexpected NULL scene nodes/trees. */
+static void
+safe_scene_node_reparent(struct wlr_scene_node *node, struct wlr_scene_tree *target, const char *ctx)
+{
+	if (!node || !target)
+		return;
+	wlr_scene_node_reparent(node, target);
+}
+
+static void
+safe_raise_tree(struct wlr_scene_tree *tree, const char *ctx)
+{
+	if (!tree)
+		return;
+	wlr_scene_node_raise_to_top(&tree->node);
+}
+
+static void
+safe_raise_node(struct wlr_scene_node *node, const char *ctx)
+{
+	if (!node)
+		return;
+	wlr_scene_node_raise_to_top(node);
+	/* Note: this only raises the node among its siblings within its parent
+	 * tree. Since client nodes are children of layer trees (LyrTile, LyrFloat),
+	 * they cannot be raised above LyrTop/LyrOverlay which are sibling trees
+	 * in the scene->tree parent. The layer tree creation order determines
+	 * the z-order: LyrTop and LyrOverlay are created after client layers,
+	 * so they're always rendered above clients. */
+}
+
 static struct wlr_pointer_constraints_v1 *pointer_constraints;
 static struct wlr_relative_pointer_manager_v1 *relative_pointer_mgr;
 static struct wlr_pointer_constraint_v1 *active_constraint;
@@ -755,6 +792,9 @@ static KeyboardGroup *kb_group;
 static unsigned int cursor_mode;
 static Client *grabc;
 static int grabcx, grabcy; /* client-relative */
+/* Screenshot/grab state for compositor-spawned screenshot tools */
+static pid_t screenshot_pid = 0;
+static int screenshot_mode = 0; /* 1 = compositor is in screenshot-grab mode */
 
 static struct wlr_output_layout *output_layout;
 static struct wlr_box sgeom;
@@ -852,8 +892,7 @@ applybounds(Client *c, struct wlr_box *bbox)
 		c->geom.x = bbox->x + bbox->width - c->geom.width;
 	if (c->geom.y >= bbox->y + bbox->height)
 		c->geom.y = bbox->y + bbox->height - c->geom.height;
-	if (c->geom.x + c->geom.width <= bbox->x)
-		c->geom.x = bbox->x;
+        
 	if (c->geom.y + c->geom.height <= bbox->y)
 		c->geom.y = bbox->y;
 }
@@ -914,18 +953,28 @@ arrange(Monitor *m)
 		if (c->mon != m || c->scene->node.parent == layers[LyrFS])
 			continue;
 
-		wlr_scene_node_reparent(&c->scene->node,
-				(!m->lt[m->sellt]->arrange && c->isfloating)
-						? layers[LyrTile]
-						: (m->lt[m->sellt]->arrange && c->isfloating)
-								? layers[LyrFloat]
-								: c->scene->node.parent);
+		/* Log reparent operations to trace z-order regressions */
+		{
+			struct wlr_scene_tree *target = (!m->lt[m->sellt]->arrange && c->isfloating)
+				? layers[LyrTile]
+				: (m->lt[m->sellt]->arrange && c->isfloating)
+					? layers[LyrFloat]
+						: c->scene->node.parent;
+            
+			safe_scene_node_reparent(&c->scene->node, target, "arrange/reparent client");
+		}
 	}
 
 	if (m->lt[m->sellt]->arrange)
 		m->lt[m->sellt]->arrange(m);
 	motionnotify(0, NULL, 0, 0, 0, 0);
 	checkidleinhibitor(NULL);
+
+	/* Ensure top/overlay layer scene trees remain above after arrange,
+	 * but keep LyrFS at the very top so fullscreen covers the bar. */
+	safe_raise_tree(layers[LyrOverlay], "arrange LyrOverlay");
+	safe_raise_tree(layers[LyrTop], "arrange LyrTop");
+	safe_raise_tree(layers[LyrFS], "arrange LyrFS");
 }
 
 void
@@ -953,6 +1002,9 @@ arrangelayers(Monitor *m)
 {
 	int i;
 	struct wlr_box usable_area = m->m;
+	/* Compute usable_area from layers' exclusive zones; do not force-reserve
+	 * a top row here — keep layout decisions to layer-shell/exclusive_zones
+	 * and to explicit bar scene placement. */
 	LayerSurface *l;
 	uint32_t layers_above_shell[] = {
 		ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY,
@@ -964,6 +1016,14 @@ arrangelayers(Monitor *m)
 	/* Arrange exclusive surfaces from top->bottom */
 	for (i = 3; i >= 0; i--)
 		arrangelayer(m, &m->layers[i], &usable_area, 1);
+
+	/* Reserve space for the built-in bar at the top of the monitor.
+	 * The bar occupies 1 cell_height row. This ensures windows don't
+	 * overlap with the bar - their frames will sit below it. */
+	if (usable_area.y == m->m.y) {
+		usable_area.y += cell_height;
+		usable_area.height -= cell_height;
+	}
 
 	if (!wlr_box_equal(&usable_area, &m->w)) {
 		m->w = usable_area;
@@ -984,6 +1044,33 @@ arrangelayers(Monitor *m)
 			exclusive_focus = l;
 			client_notify_enter(l->layer_surface->surface, wlr_seat_get_keyboard(seat));
 			return;
+		}
+	}
+
+	/* Log usable area after arranging layers so we can debug transient changes */
+	file_debug_log("tbwm: arrangelayers: monitor=%s usable_area={%d,%d,%d,%d}\n",
+			m->wlr_output->name, usable_area.x, usable_area.y, usable_area.width, usable_area.height);
+
+	/* Ensure top/overlay layer scene trees stay above other scene nodes,
+	 * but keep LyrFS at the very top so fullscreen covers the bar. */
+	safe_raise_tree(layers[LyrOverlay], "arrangelayers LyrOverlay");
+	safe_raise_tree(layers[LyrTop], "arrangelayers LyrTop");
+	safe_raise_tree(layers[LyrFS], "arrangelayers LyrFS");
+
+	/* Defensive: ensure no client scene nodes are parented under top/overlay
+	 * layers. If we detect such a misparent (possible from earlier bugs),
+	 * reparent the client into its correct client layer so it cannot render
+	 * above/below the bar incorrectly. */
+	Client *cc;
+	wl_list_for_each(cc, &clients, link) {
+		if (!cc->scene)
+			continue;
+		struct wlr_scene_tree *par = (struct wlr_scene_tree *)cc->scene->node.parent;
+		if (par == layers[LyrTop] || par == layers[LyrOverlay]) {
+			struct wlr_scene_tree *target = cc->isfullscreen ? layers[LyrFS]
+				: cc->isfloating ? layers[LyrFloat] : layers[LyrTile];
+			tbwm_log(TBWM_LOG_WARN, "tbwm: enforce: reparent client %p from top/overlay to target\n", cc);
+			safe_scene_node_reparent(&cc->scene->node, target, "enforce client layer invariant");
 		}
 	}
 }
@@ -1043,6 +1130,15 @@ buttonpress(struct wl_listener *listener, void *data)
 	const Button *b;
 
 	wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
+
+	/* If we're in screenshot-grab mode, avoid compositor UI handling but
+	 * still forward the button event to the seat so the screenshot client
+	 * (if it has focus) receives it. */
+	if (screenshot_mode) {
+		wlr_seat_pointer_notify_button(seat,
+				event->time_msec, event->button, event->state);
+		return;
+	}
 
 	switch (event->state) {
 	case WL_POINTER_BUTTON_STATE_PRESSED:
@@ -1576,6 +1672,13 @@ closemon(Monitor *m)
 	}
 	focusclient(focustop(selmon), 1);
 	printstatus();
+
+	/* Ensure top layers above after monitor close/reparenting,
+	 * but keep LyrFS at the very top so fullscreen covers the bar. */
+
+	safe_raise_tree(layers[LyrOverlay], "closemon LyrOverlay");
+	safe_raise_tree(layers[LyrTop], "closemon LyrTop");
+	safe_raise_tree(layers[LyrFS], "closemon LyrFS");
 }
 
 void
@@ -1585,6 +1688,12 @@ commitlayersurfacenotify(struct wl_listener *listener, void *data)
 	struct wlr_layer_surface_v1 *layer_surface = l->layer_surface;
 	struct wlr_scene_tree *scene_layer = layers[layermap[layer_surface->current.layer]];
 	struct wlr_layer_surface_v1_state old_state;
+
+	file_debug_log("tbwm: commitlayersurface: layer=%d mapped=%d initial_commit=%d committed=%d\n",
+			layer_surface->current.layer,
+			layer_surface->surface ? layer_surface->surface->mapped : 0,
+			layer_surface->initial_commit,
+			layer_surface->current.committed);
 
 	if (l->layer_surface->initial_commit) {
 		client_set_scale(layer_surface->surface, l->mon->wlr_output->scale);
@@ -1602,15 +1711,33 @@ commitlayersurfacenotify(struct wl_listener *listener, void *data)
 		return;
 	l->mapped = layer_surface->surface->mapped;
 
-	if (scene_layer != l->scene->node.parent) {
-		wlr_scene_node_reparent(&l->scene->node, scene_layer);
+		if (scene_layer != l->scene->node.parent) {
+			safe_scene_node_reparent(&l->scene->node, scene_layer, "commitlayersurface/reparent layer");
 		wl_list_remove(&l->link);
 		wl_list_insert(&l->mon->layers[layer_surface->current.layer], &l->link);
-		wlr_scene_node_reparent(&l->popups->node, (layer_surface->current.layer
-				< ZWLR_LAYER_SHELL_V1_LAYER_TOP ? layers[LyrTop] : scene_layer));
+		file_debug_log("tbwm: reparent layer popups: scene_node=%p parent=%p -> %p\n",
+				l->popups, l->popups->node.parent,
+				(void*)(layer_surface->current.layer >= ZWLR_LAYER_SHELL_V1_LAYER_TOP ? layers[LyrTop] : scene_layer));
+		safe_scene_node_reparent(&l->popups->node, (layer_surface->current.layer
+			>= ZWLR_LAYER_SHELL_V1_LAYER_TOP ? layers[LyrTop] : scene_layer), "commitlayersurface/reparent popups");
 	}
 
+	safe_raise_tree(layers[LyrOverlay], "commitlayersurface LyrOverlay");
+	safe_raise_tree(layers[LyrTop], "commitlayersurface LyrTop");
+	safe_raise_tree(layers[LyrFS], "commitlayersurface LyrFS");
+
 	arrangelayers(l->mon);
+
+	file_debug_log("tbwm: commitlayersurface: post-arrange layer=%d mapped=%d usable_area={%d,%d,%d,%d}\n",
+			layer_surface->current.layer,
+			layer_surface->surface ? layer_surface->surface->mapped : 0,
+			l->mon->w.x, l->mon->w.y, l->mon->w.width, l->mon->w.height);
+
+	/* Ensure top/overlay layers are above after layer commits/reparents,
+	 * but keep LyrFS at the very top so fullscreen covers the bar. */
+	safe_raise_tree(layers[LyrOverlay], "commitlayersurface LyrOverlay");
+	safe_raise_tree(layers[LyrTop], "commitlayersurface LyrTop");
+	safe_raise_tree(layers[LyrFS], "commitlayersurface LyrFS");
 }
 
 void
@@ -1769,12 +1896,18 @@ createlayersurface(struct wl_listener *listener, void *data)
 	l->mon = layer_surface->output->data;
 	l->scene_layer = wlr_scene_layer_surface_v1_create(scene_layer, layer_surface);
 	l->scene = l->scene_layer->tree;
-	l->popups = surface->data = wlr_scene_tree_create(layer_surface->current.layer
-			< ZWLR_LAYER_SHELL_V1_LAYER_TOP ? layers[LyrTop] : scene_layer);
+	    l->popups = surface->data = wlr_scene_tree_create(layer_surface->current.layer
+		    >= ZWLR_LAYER_SHELL_V1_LAYER_TOP ? layers[LyrTop] : scene_layer);
 	l->scene->node.data = l->popups->node.data = l;
 
 	wl_list_insert(&l->mon->layers[layer_surface->pending.layer],&l->link);
 	wlr_surface_send_enter(surface, layer_surface->output);
+
+	file_debug_log("tbwm: createlayersurface: layer=%d pending.exclusive_zone=%d keyboard_interactive=%d output=%s\n",
+			layer_surface->pending.layer,
+			layer_surface->pending.exclusive_zone,
+			layer_surface->pending.keyboard_interactive,
+			layer_surface->output ? layer_surface->output->name : "(none)");
 }
 
 void
@@ -2485,73 +2618,59 @@ Client *
 client_in_direction(Client *c, int dir)
 {
 	Client *best = NULL, *other;
-	int best_ratio = 0;
-	int best_pos = INT_MAX;
-	int overlap, pos, ratio, candidate_size;
-	int ax, ay, aw, ah;
-	int bx, by, bw, bh;
-	
+	int best_score = INT_MIN;
+
 	if (!c || !c->mon) return NULL;
-	
-	ax = c->geom.x;
-	ay = c->geom.y;
-	aw = c->geom.width;
-	ah = c->geom.height;
-	
+
+	int ax = c->geom.x, ay = c->geom.y, aw = c->geom.width, ah = c->geom.height;
+
 	wl_list_for_each(other, &clients, link) {
-		if (other == c || !VISIBLEON(other, c->mon) || other->isfloating || other->isfullscreen)
+		if (other == c || !VISIBLEON(other, c->mon) || other->isfullscreen)
 			continue;
-		
-		bx = other->geom.x;
-		by = other->geom.y;
-		bw = other->geom.width;
-		bh = other->geom.height;
-		
-		overlap = 0;
-		pos = 0;
-		candidate_size = 1;
-		
+
+		int bx = other->geom.x, by = other->geom.y, bw = other->geom.width, bh = other->geom.height;
+
+		int primary_dist = 0;
+		int overlap = 0;
+
 		switch (dir) {
 		case DirLeft:
-			if (bx + bw <= ax + aw/2 && bx < ax) {
+			if (bx + bw <= ax) {
+				primary_dist = ax - (bx + bw);
 				overlap = MIN(ay + ah, by + bh) - MAX(ay, by);
-				pos = by;
-				candidate_size = bh;
-			}
+			} else continue;
 			break;
 		case DirRight:
-			if (bx >= ax + aw/2 && bx + bw > ax + aw) {
+			if (bx >= ax + aw) {
+				primary_dist = bx - (ax + aw);
 				overlap = MIN(ay + ah, by + bh) - MAX(ay, by);
-				pos = by;
-				candidate_size = bh;
-			}
+			} else continue;
 			break;
 		case DirUp:
-			if (by + bh <= ay + ah/2 && by < ay) {
+			if (by + bh <= ay) {
+				primary_dist = ay - (by + bh);
 				overlap = MIN(ax + aw, bx + bw) - MAX(ax, bx);
-				pos = bx;
-				candidate_size = bw;
-			}
+			} else continue;
 			break;
 		case DirDown:
-			if (by >= ay + ah/2 && by + bh > ay + ah) {
+			if (by >= ay + ah) {
+				primary_dist = by - (ay + ah);
 				overlap = MIN(ax + aw, bx + bw) - MAX(ax, bx);
-				pos = bx;
-				candidate_size = bw;
-			}
+			} else continue;
 			break;
 		}
-		
-		if (overlap > 0) {
-			ratio = (overlap * 100) / candidate_size;
-			if (!best || ratio > best_ratio || (ratio == best_ratio && pos < best_pos)) {
-				best_ratio = ratio;
-				best_pos = pos;
-				best = other;
-			}
+
+		if (overlap <= 0)
+			continue;
+
+		/* score: prefer larger overlap, then shorter distance */
+		int score = overlap * 1000 - primary_dist;
+		if (score > best_score) {
+			best_score = score;
+			best = other;
 		}
 	}
-	
+
 	return best;
 }
 
@@ -2755,13 +2874,13 @@ focusclient(Client *c, int lift)
 
 	/* Raise client in stacking order if requested */
 	if (c && lift) {
-		wlr_scene_node_raise_to_top(&c->scene->node);
+		safe_raise_node(&c->scene->node, "focusclient raise client");
 		/* Ensure floating windows stay above tiled windows */
 		if (!c->isfloating) {
 			Client *f;
 			wl_list_for_each(f, &fstack, flink) {
 				if (f->isfloating && VISIBLEON(f, c->mon))
-					wlr_scene_node_raise_to_top(&f->scene->node);
+					safe_raise_node(&f->scene->node, "focusclient raise floating");
 			}
 		}
 	}
@@ -2946,6 +3065,34 @@ signal_fd_cb(int fd, uint32_t mask, void *data)
 	}
 	if (exit_requested)
 		quit(NULL);
+	/* Child processes (spawned via scm_spawn) will trigger SIGCHLD which
+	 * wakes this callback. Some short-lived clients (grim/slurp) may map
+	 * transient surfaces that can leave frame decoration state stale when
+	 * they exit. Force a layout/frame update here to keep borders in sync. */
+	updateframes();
+	/* Recompute arrangement on all monitors to ensure borders/stacking are correct */
+	{
+		Monitor *m;
+		wl_list_for_each(m, &mons, link) {
+			arrange(m);
+			/* Also recompute layer arrangements in case a transient layer surface
+			 * (eg. selection/overlay used by slurp) changed the usable area. */
+			arrangelayers(m);
+		}
+	}
+	/* Reap any exited children and clear screenshot grab state if needed */
+	{
+		int status;
+		pid_t pid;
+		while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+			if (pid == screenshot_pid) {
+				screenshot_pid = 0;
+				screenshot_mode = 0;
+				if (cursor && cursor_mgr)
+					wlr_cursor_set_xcursor(cursor, cursor_mgr, "default");
+			}
+		}
+	}
 	return 1; /* continue watching */
 }
 
@@ -3455,6 +3602,15 @@ keypress(struct wl_listener *listener, void *data)
 
 	wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
 
+	/* If in screenshot-grab mode, don't run compositor keybindings; forward
+	 * keyboard events to the seat so the screenshot client can receive keys. */
+	if (screenshot_mode) {
+		wlr_seat_set_keyboard(seat, &group->wlr_group->keyboard);
+		wlr_seat_keyboard_notify_key(seat, event->time_msec,
+				event->keycode, event->state);
+		return;
+	}
+
 	/* On _press_ if there is no active screen locker,
 	 * attempt to process a compositor keybinding. */
 	if (!locked && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
@@ -3462,7 +3618,9 @@ keypress(struct wl_listener *listener, void *data)
 			handled = keybinding(mods, syms[i]) || handled;
 	}
 
-	if (handled && group->wlr_group->keyboard.repeat_info.delay > 0) {
+	/* Don't enable key repeat if we're now in screenshot mode (spawn-grab was called)
+	 * or if the keybinding spawned a process - we don't want to spawn it repeatedly. */
+	if (handled && !screenshot_mode && group->wlr_group->keyboard.repeat_info.delay > 0) {
 		group->mods = mods;
 		group->keysyms = syms;
 		group->nsyms = nsyms;
@@ -3566,7 +3724,9 @@ mapnotify(struct wl_listener *listener, void *data)
 	/* Handle unmanaged clients first so we can return prior create borders */
 	if (client_is_unmanaged(c)) {
 		/* Unmanaged clients always are floating */
-		wlr_scene_node_reparent(&c->scene->node, layers[LyrFloat]);
+		file_debug_log("tbwm: reparent map unmanaged: client=%p title=\"%s\" parent=%p -> %p\n",
+				c, client_get_title(c), c->scene->node.parent, (void*)layers[LyrFloat]);
+		safe_scene_node_reparent(&c->scene->node, layers[LyrFloat], "xwayland/new surface reparent to float");
 		wlr_scene_node_set_position(&c->scene->node, c->geom.x, c->geom.y);
 		client_set_size(c, c->geom.width, c->geom.height);
 		if (client_wants_focus(c)) {
@@ -3610,6 +3770,12 @@ unset_fullscreen:
 		if (w != c && w != p && w->isfullscreen && m == w->mon && (w->tags & c->tags))
 			setfullscreen(w, 0);
 	}
+
+	/* Ensure top layers remain above after a new client maps,
+	 * but keep LyrFS at the very top so fullscreen covers the bar. */
+	safe_raise_tree(layers[LyrOverlay], "mapnotify LyrOverlay");
+	safe_raise_tree(layers[LyrTop], "mapnotify LyrTop");
+	safe_raise_tree(layers[LyrFS], "mapnotify LyrFS");
 }
 
 void
@@ -3645,7 +3811,7 @@ monocle(Monitor *m)
 	if (n)
 		snprintf(m->ltsymbol, LENGTH(m->ltsymbol), "[%d]", n);
 	if ((c = focustop(m)))
-		wlr_scene_node_raise_to_top(&c->scene->node);
+		safe_raise_node(&c->scene->node, "dwindle/new_parent raise");
 }
 
 void
@@ -3717,6 +3883,15 @@ motionnotify(uint32_t time, struct wlr_input_device *device, double dx, double d
 
 		wlr_cursor_move(cursor, device, dx, dy);
 		wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
+
+		/* If compositor entered screenshot-grab mode, forward motion only to the
+		 * seat (so the screenshot client can receive it) and avoid compositor UI. */
+		if (screenshot_mode) {
+			wlr_seat_pointer_notify_motion(seat, time, sx, sy);
+			if (cursor && cursor_mgr)
+				wlr_cursor_set_xcursor(cursor, cursor_mgr, "crosshair");
+			return;
+		}
 
 		/* Update selmon (even while dragging a window) */
 		if (sloppyfocus)
@@ -4044,8 +4219,6 @@ refresh(const Arg *arg)
 		if (m->wlr_output->enabled) {
 			arrangelayers(m);
 			m->w = m->m;
-			m->w.y += cell_height;
-			m->w.height -= cell_height;
 			updatebar(m);
 			arrange(m);
 		}
@@ -4350,9 +4523,10 @@ setfloating(Client *c, int floating)
 		resize(c, newgeom, 1);
 	}
 	
-	wlr_scene_node_reparent(&c->scene->node, layers[c->isfullscreen ||
-			(p && p->isfullscreen) ? LyrFS
-			: c->isfloating ? LyrFloat : LyrTile]);
+	{
+		struct wlr_scene_tree *target = layers[c->isfullscreen || (p && p->isfullscreen) ? LyrFS : c->isfloating ? LyrFloat : LyrTile];
+		safe_scene_node_reparent(&c->scene->node, target, "dwindle/create parent reparent");
+	}
 	arrange(c->mon);
 	printstatus();
 }
@@ -4365,8 +4539,10 @@ setfullscreen(Client *c, int fullscreen)
 		return;
 	c->bw = fullscreen ? 0 : cfg_borderpx;
 	client_set_fullscreen(c, fullscreen);
-	wlr_scene_node_reparent(&c->scene->node, layers[c->isfullscreen
-			? LyrFS : c->isfloating ? LyrFloat : LyrTile]);
+	    safe_scene_node_reparent(&c->scene->node, layers[c->isfullscreen
+		    ? LyrFS : c->isfloating ? LyrFloat : LyrTile], "setfullscreen/reparent");
+	/* Ensure fullscreen layer is above top/overlay so it truly covers the bar */
+	safe_raise_tree(layers[LyrFS], "setfullscreen LyrFS");
 
 	if (fullscreen) {
 		c->prev = c->geom;
@@ -4378,6 +4554,13 @@ setfullscreen(Client *c, int fullscreen)
 	}
 	arrange(c->mon);
 	updatebar(c->mon);  /* Update bar visibility */
+	/* Ensure bar visibility follows config immediately for this monitor */
+	if (c->mon && c->mon->bar) {
+		if (cfg_bar_autohide)
+			wlr_scene_node_set_enabled(&c->mon->bar->node, !fullscreen);
+		else
+			wlr_scene_node_set_enabled(&c->mon->bar->node, 1);
+	}
 	printstatus();
 }
 
@@ -4503,8 +4686,19 @@ setup(void)
 	/* Initialize the scene graph used to lay out windows */
 	scene = wlr_scene_create();
 	root_bg = wlr_scene_rect_create(&scene->tree, 0, 0, cfg_rootcolor);
-	for (i = 0; i < NUM_LAYERS; i++)
-		layers[i] = wlr_scene_tree_create(&scene->tree);
+	/* Create layer scene trees in a deterministic z-order. Create the
+	 * normally-topmost layers last so they are drawn above client layers
+	 * by default and avoid needing raises. */
+	layers[LyrBg] = wlr_scene_tree_create(&scene->tree);
+	layers[LyrBottom] = wlr_scene_tree_create(&scene->tree);
+	layers[LyrTile] = wlr_scene_tree_create(&scene->tree);
+	layers[LyrFloat] = wlr_scene_tree_create(&scene->tree);
+	layers[LyrBlock] = wlr_scene_tree_create(&scene->tree);
+	/* Create top and overlay before fullscreen so fullscreen can be placed
+	 * above the bar when necessary. */
+	layers[LyrTop] = wlr_scene_tree_create(&scene->tree);
+	layers[LyrOverlay] = wlr_scene_tree_create(&scene->tree);
+	layers[LyrFS] = wlr_scene_tree_create(&scene->tree);
 	drag_icon = wlr_scene_tree_create(&scene->tree);
 	wlr_scene_node_place_below(&drag_icon->node, &layers[LyrBlock]->node);
 
@@ -4743,10 +4937,18 @@ setupgrid(void)
 	}
 
 	FT_Set_Pixel_Sizes(ft_face, 0, cfg_font_size);
+	/* Prefer the Unicode charmap so FT_Load_Char() works with Unicode codepoints */
+	if (FT_Select_Charmap(ft_face, FT_ENCODING_UNICODE) != 0) {
+		tbwm_log(TBWM_LOG_DEBUG, "font %s: could not select Unicode charmap", cfg_font_path);
+	}
 
 	/* Try to load fallback font (optional) */
 	if (FT_New_Face(ft_library, cfg_fallback_font_path, 0, &ft_fallback_face) == 0) {
 		FT_Set_Pixel_Sizes(ft_fallback_face, 0, cfg_font_size);
+		/* Prefer the Unicode charmap on fallback too */
+		if (FT_Select_Charmap(ft_fallback_face, FT_ENCODING_UNICODE) != 0) {
+			tbwm_log(TBWM_LOG_DEBUG, "fallback font %s: could not select Unicode charmap", cfg_fallback_font_path);
+		}
 		tbwm_log(TBWM_LOG_INFO, "Loaded fallback font: %s", cfg_fallback_font_path);
 	} else {
 		ft_fallback_face = NULL;
@@ -4776,6 +4978,31 @@ static s7_pointer scm_spawn(s7_scheme *sc, s7_pointer args)
 		execlp("/bin/sh", "/bin/sh", "-c", cmd, NULL);
 		_exit(EXIT_FAILURE);
 	}
+	return s7_t(sc);
+}
+
+/* Scheme: (spawn-grab cmd) - launch program and enter compositor screenshot-grab mode
+ * This is intended for short-lived screenshot helpers (grim/slurp). The compositor
+ * will set a local grab flag and restore state when the child exits. */
+static s7_pointer scm_spawn_grab(s7_scheme *sc, s7_pointer args)
+{
+	const char *cmd;
+	if (!s7_is_string(s7_car(args)))
+		return s7_f(sc);
+	cmd = s7_string(s7_car(args));
+	pid_t pid = fork();
+	if (pid < 0)
+		return s7_f(sc);
+	if (pid == 0) {
+		setsid();
+		execlp("/bin/sh", "/bin/sh", "-c", cmd, NULL);
+		_exit(EXIT_FAILURE);
+	}
+	/* Parent: mark screenshot grab active and remember pid */
+	screenshot_pid = pid;
+	screenshot_mode = 1;
+	if (cursor && cursor_mgr)
+		wlr_cursor_set_xcursor(cursor, cursor_mgr, "crosshair");
 	return s7_t(sc);
 }
 
@@ -5490,6 +5717,13 @@ static s7_pointer scm_set_status_text(s7_scheme *sc, s7_pointer args) {
 	return s7_t(sc);
 }
 
+/* Scheme: (set-bar-autohide b) - enable/disable hiding bar when a client is fullscreen */
+static s7_pointer scm_set_bar_autohide(s7_scheme *sc, s7_pointer args) {
+	cfg_bar_autohide = s7_boolean(sc, s7_car(args)) ? 1 : 0;
+	updatebars();
+	return s7_t(sc);
+}
+
 /* Scheme: (on-startup cmd1 cmd2 ...) - register commands to run on startup */
 static s7_pointer scm_on_startup(s7_scheme *sc, s7_pointer args) {
 	s7_pointer arg;
@@ -5543,6 +5777,9 @@ static s7_pointer scm_set_font(s7_scheme *sc, s7_pointer args) {
 	if (ft_face) FT_Done_Face(ft_face);
 	if (FT_New_Face(ft_library, cfg_font_path, 0, &ft_face) == 0) {
 		FT_Set_Pixel_Sizes(ft_face, 0, cfg_font_size);
+		if (FT_Select_Charmap(ft_face, FT_ENCODING_UNICODE) != 0) {
+			tbwm_log(TBWM_LOG_DEBUG, "font %s: could not select Unicode charmap", cfg_font_path);
+		}
 		if (FT_Load_Char(ft_face, 'M', FT_LOAD_DEFAULT) == 0) {
 			cell_width = ft_face->glyph->advance.x >> 6;
 			cell_height = ft_face->size->metrics.height >> 6;
@@ -5565,6 +5802,9 @@ static s7_pointer scm_set_fallback_font(s7_scheme *sc, s7_pointer args) {
 	if (ft_fallback_face) FT_Done_Face(ft_fallback_face);
 	if (FT_New_Face(ft_library, cfg_fallback_font_path, 0, &ft_fallback_face) == 0) {
 		FT_Set_Pixel_Sizes(ft_fallback_face, 0, cfg_font_size);
+		if (FT_Select_Charmap(ft_fallback_face, FT_ENCODING_UNICODE) != 0) {
+			tbwm_log(TBWM_LOG_DEBUG, "fallback font %s: could not select Unicode charmap", cfg_fallback_font_path);
+		}
 		tbwm_log(TBWM_LOG_INFO, "tbwm: fallback font changed to %s\n", cfg_fallback_font_path);
 		/* Invalidate glyph cache so new glyphs are loaded */
 		for (int i = 0; i < GLYPH_CACHE_SIZE; i++)
@@ -5733,6 +5973,8 @@ setup_scheme(void)
 {
 	/* Define Scheme functions */
 	s7_define_function(sc, "spawn", scm_spawn, 1, 0, false, "(spawn cmd) launch a program");
+	s7_define_function(sc, "spawn-grab", scm_spawn_grab, 1, 0, false, "(spawn-grab cmd) launch a program and enter compositor screenshot grab mode");
+	s7_define_function(sc, "set-bar-autohide", scm_set_bar_autohide, 1, 0, false, "(set-bar-autohide b) enable/disable hiding bar when fullscreen");
 	s7_define_function(sc, "quit", scm_quit, 0, 0, false, "(quit) exit the window manager");
 	s7_define_function(sc, "focus-dir", scm_focus_dir, 1, 0, false, "(focus-dir dir) focus window in direction (0=left,1=right,2=up,3=down)");
 	s7_define_function(sc, "swap-dir", scm_swap_dir, 1, 0, false, "(swap-dir dir) swap window in direction");
@@ -5838,7 +6080,7 @@ static const char *default_config_parts[] = {
 "(set-bg-color \"#000000\")\n"
 "\n"
 ";; Background/REPL text color (grey)\n"
-"(set-bg-text-color \"#888888\")\n"
+"(set-bg-text-color \"#aaaaaa\")\n"
 "\n"
 ";; Status bar background (the blue)\n"
 "(set-bar-color \"#0000aa\")\n"
@@ -5972,8 +6214,8 @@ static const char *default_config_parts[] = {
 "(bind-key \"M-S-c\" (lambda () (reload-config) (log \"Config reloaded!\")))\n"
 "\n"
 ";; Screenshots (requires grim, slurp, wl-copy)\n"
-"(bind-key \"Print\" (lambda () (spawn \"sh -c 'grim - | wl-copy'\")))\n"
-"(bind-key \"S-Print\" (lambda () (spawn \"sh -c 'grim -g \\\"$(slurp)\\\" - | wl-copy'\")))\n"
+"(bind-key \"Print\" (lambda () (spawn-grab \"sh -c 'grim - | wl-copy'\")))\n"
+"(bind-key \"S-Print\" (lambda () (spawn-grab \"sh -c 'grim -g \\\"$(slurp)\\\" - | wl-copy'\")))\n"
 "\n"
 ";; Volume control (requires wpctl/wireplumber)\n"
 "(bind-key \"XF86AudioRaiseVolume\" (lambda () (spawn \"wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+\")))\n"
@@ -7478,9 +7720,12 @@ updatebar(Monitor *m)
 	wlr_scene_buffer_set_buffer(m->bar, &tb->base);
 	/* Don't drop - we're caching the buffer for reuse */
 
-	/* Hide bar when a fullscreen client is focused */
+	/* Hide bar when a fullscreen client is focused (configurable) */
 	Client *fc = focustop(m);
-	wlr_scene_node_set_enabled(&m->bar->node, !(fc && fc->isfullscreen));
+	if (cfg_bar_autohide)
+		wlr_scene_node_set_enabled(&m->bar->node, !(fc && fc->isfullscreen));
+	else
+		wlr_scene_node_set_enabled(&m->bar->node, 1);
 }
 
 /* Check if there's an adjacent tiled window in the given direction.
@@ -7609,28 +7854,71 @@ get_cached_glyph(unsigned long charcode)
 	idx = (empty_slot >= 0) ? empty_slot : start_idx;
 	cg = &glyph_cache[idx];
 
-	/* Need to load this glyph. Try primary font, then fallback, then '?'. */
+	/* Need to load this glyph. Prefer probing with FT_Get_Char_Index so we
+	 * can reliably detect whether a face contains the glyph, then load and
+	 * render it. Fall back to the fallback face if primary lacks it, and
+	 * finally try the '?' glyph on either face. */
 	int used_fallback = 0;
-	if (FT_Load_Char(ft_face, charcode, FT_LOAD_RENDER)) {
-		if (ft_fallback_face && FT_Load_Char(ft_fallback_face, charcode, FT_LOAD_RENDER) == 0) {
-			used_fallback = 1;
-		} else {
-			/* Try question-mark fallback */
-			if (charcode != '?') {
-				if (FT_Load_Char(ft_face, '?', FT_LOAD_RENDER)) {
-					if (ft_fallback_face && FT_Load_Char(ft_fallback_face, '?', FT_LOAD_RENDER) == 0) {
-						used_fallback = 1;
-					} else {
-						return NULL;
-					}
-				}
-			} else {
-				return NULL;
+	FT_UInt glyph_index = 0;
+	FT_Error ferr = 1;
+
+	if (ft_face) {
+		glyph_index = FT_Get_Char_Index(ft_face, charcode);
+		if (glyph_index != 0) {
+			ferr = FT_Load_Glyph(ft_face, glyph_index, FT_LOAD_DEFAULT);
+			if (!ferr && ft_face->glyph->format != FT_GLYPH_FORMAT_BITMAP)
+				ferr = FT_Render_Glyph(ft_face->glyph, FT_RENDER_MODE_NORMAL);
+			if (!ferr)
+				slot = ft_face->glyph;
+		}
+	}
+
+	if (ferr && ft_fallback_face) {
+		glyph_index = FT_Get_Char_Index(ft_fallback_face, charcode);
+		if (glyph_index != 0) {
+			ferr = FT_Load_Glyph(ft_fallback_face, glyph_index, FT_LOAD_DEFAULT);
+			if (!ferr && ft_fallback_face->glyph->format != FT_GLYPH_FORMAT_BITMAP)
+				ferr = FT_Render_Glyph(ft_fallback_face->glyph, FT_RENDER_MODE_NORMAL);
+			if (!ferr) {
+				slot = ft_fallback_face->glyph;
+				used_fallback = 1;
+				tbwm_log(TBWM_LOG_DEBUG, "glyph U+%04lx loaded from fallback font", charcode);
 			}
 		}
 	}
 
-	slot = used_fallback ? ft_fallback_face->glyph : ft_face->glyph;
+	if (ferr) {
+		/* Try question-mark fallback */
+		if (charcode != '?') {
+			/* Try primary '?'
+			 * prefer primary so the look is consistent */
+			if (ft_face) {
+				glyph_index = FT_Get_Char_Index(ft_face, '?');
+				if (glyph_index != 0) {
+					ferr = FT_Load_Glyph(ft_face, glyph_index, FT_LOAD_DEFAULT);
+					if (!ferr && ft_face->glyph->format != FT_GLYPH_FORMAT_BITMAP)
+						ferr = FT_Render_Glyph(ft_face->glyph, FT_RENDER_MODE_NORMAL);
+					if (!ferr) {
+						slot = ft_face->glyph;
+					}
+				}
+			}
+			if (ferr && ft_fallback_face) {
+				glyph_index = FT_Get_Char_Index(ft_fallback_face, '?');
+				if (glyph_index != 0) {
+					ferr = FT_Load_Glyph(ft_fallback_face, glyph_index, FT_LOAD_DEFAULT);
+					if (!ferr && ft_fallback_face->glyph->format != FT_GLYPH_FORMAT_BITMAP)
+						ferr = FT_Render_Glyph(ft_fallback_face->glyph, FT_RENDER_MODE_NORMAL);
+					if (!ferr) {
+						slot = ft_fallback_face->glyph;
+						used_fallback = 1;
+					}
+				}
+			}
+		}
+		if (ferr)
+			return NULL;
+	}
 
 	/* Free old bitmap if present */
 	if (cg->bitmap) {
@@ -8367,6 +8655,10 @@ unmaplayersurfacenotify(struct wl_listener *listener, void *data)
 {
 	LayerSurface *l = wl_container_of(listener, l, unmap);
 
+	file_debug_log("tbwm: unmaplayersurface: layer=%d output=%s\n",
+			l->layer_surface ? l->layer_surface->current.layer : -1,
+			(l->layer_surface && l->layer_surface->output) ? l->layer_surface->output->name : "(none)");
+
 	l->mapped = 0;
 	wlr_scene_node_set_enabled(&l->scene->node, 0);
 	if (l == exclusive_focus)
@@ -8376,6 +8668,12 @@ unmaplayersurfacenotify(struct wl_listener *listener, void *data)
 	if (l->layer_surface->surface == seat->keyboard_state.focused_surface)
 		focusclient(focustop(selmon), 1);
 	motionnotify(0, NULL, 0, 0, 0, 0);
+
+	/* Defensive: ensure top layers above after a layer unmaps,
+	 * but keep LyrFS at the very top so fullscreen covers the bar. */
+	safe_raise_tree(layers[LyrOverlay], "unmaplayersurface LyrOverlay");
+	safe_raise_tree(layers[LyrTop], "unmaplayersurface LyrTop");
+	safe_raise_tree(layers[LyrFS], "unmaplayersurface LyrFS");
 }
 
 void
@@ -8383,6 +8681,7 @@ unmapnotify(struct wl_listener *listener, void *data)
 {
 	/* Called when the surface is unmapped, and should no longer be shown. */
 	Client *c = wl_container_of(listener, c, unmap);
+	Monitor *m = c->mon;
 	if (c == grabc) {
 		cursor_mode = CurNormal;
 		grabc = NULL;
@@ -8431,6 +8730,21 @@ unmapnotify(struct wl_listener *listener, void *data)
 	}
 
 	wlr_scene_node_destroy(&c->scene->node);
+
+	/* Recompute layers/usable-area after client removal so layer ordering
+	 * and usable area are applied consistently (arrangelayers raises top
+	 * trees as needed). */
+	if (m)
+		arrangelayers(m);
+	else
+		arrangelayers(selmon);
+
+	/* Ensure top layers stay above after a client is unmapped/removed,
+	 * but keep LyrFS at the very top so fullscreen covers the bar. */
+	safe_raise_tree(layers[LyrOverlay], "unmapnotify LyrOverlay");
+	safe_raise_tree(layers[LyrTop], "unmapnotify LyrTop");
+	safe_raise_tree(layers[LyrFS], "unmapnotify LyrFS");
+
 	printstatus();
 	updatebars();
 	motionnotify(0, NULL, 0, 0, 0, 0);
@@ -8499,11 +8813,10 @@ updatemons(struct wl_listener *listener, void *data)
 			wlr_session_lock_surface_v1_configure(m->lock_surface, m->m.width, m->m.height);
 		}
 
-		/* Calculate the effective monitor geometry to use for clients */
+		/* Calculate the effective monitor geometry to use for clients
+		 * by arranging layer surfaces (exclusive zones will be applied by
+		 * arrangelayers()). We do NOT force-reserve a top cell here. */
 		arrangelayers(m);
-		/* Reserve space for status bar at top (after arrangelayers) */
-		m->w.y += cell_height;
-		m->w.height -= cell_height;
 		updatebar(m);
 		/* Don't move clients to the left output when plugging monitors */
 		arrange(m);
@@ -8651,6 +8964,8 @@ xytonode(double x, double y, struct wlr_surface **psurface,
 		if (!(node = wlr_scene_node_at(&layers[layer]->node, x, y, nx, ny)))
 			continue;
 
+		file_debug_log("xytonode: found node in layer %d at (%.0f, %.0f)\n", layer, x, y);
+
 		if (node->type == WLR_SCENE_NODE_BUFFER) {
 			struct wlr_scene_surface *scene_surface = wlr_scene_surface_try_from_buffer(
 					wlr_scene_buffer_from_node(node));
@@ -8665,6 +8980,8 @@ xytonode(double x, double y, struct wlr_surface **psurface,
 			l = pnode->data;
 		}
 	}
+
+	file_debug_log("xytonode: result c=%p l=%p surface=%p at (%.0f, %.0f)\n", c, l, surface, x, y);
 
 	if (psurface) *psurface = surface;
 	if (pc) *pc = c;

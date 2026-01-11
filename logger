@@ -1,0 +1,1 @@
+tail -n 200 /tmp/tbwm-debug.log /tmp/tbwm-run.log
