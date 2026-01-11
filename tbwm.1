@@ -1,0 +1,23 @@
+.TH TBWM 1 "January 2026" "TurboWM 0.8" "User Commands"
+.SH NAME
+tbwm \- TurboWM dynamic tiling Wayland compositor
+.SH SYNOPSIS
+.B tbwm
+[\fI\-s startup_command\fR]
+.SH DESCRIPTION
+TurboWM is a dynamic tiling Wayland compositor with a VGA/TurboC/TempleOS aesthetic.
+The entire UI is based on a character cell grid system using an 8x16 VGA bitmap font.
+.SH OPTIONS
+.TP
+.BR \-s " " \fIcommand\fR
+Execute command at startup
+.SH CONFIGURATION
+Configuration is done via Scheme scripts in ~/.config/tbwm/config.scm
+.PP
+Open the REPL with Super+Shift+; for live configuration.
+.SH KEYBINDINGS
+See docs/keybindings.md for default keybindings.
+.SH SEE ALSO
+.BR wlroots (7)
+.SH AUTHORS
+TurboWM developers

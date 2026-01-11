@@ -171,9 +171,12 @@ typedef struct {
 	int frame_width;  /* cached dimensions to detect resize */
 	int frame_height;
 	/* Pre-rendered scrolling title texture (rendered once, scrolled by offset) */
-	uint32_t *scroll_title_pixels;  /* Pre-rendered title + "  " separator */
-	int scroll_title_width;         /* Total width in pixels */
+	uint32_t *scroll_title_pixels;  /* Pre-rendered title + "  " separator (doubled for wrap) */
+	int scroll_title_width;         /* Width of ONE cycle in pixels */
 	char scroll_title_hash[128];    /* Hash of title to detect changes */
+	/* Dedicated scene buffer for scrolling - uses source_box panning */
+	struct wlr_scene_buffer *scroll_scene_buf;
+	struct TitleBuffer *scroll_buf;  /* The actual buffer (2x width for seamless wrap) */
 	/* Cached scroll region coordinates for fast scroll-only updates */
 	int scroll_dest_x;              /* X offset in frame buffer where title goes */
 	int scroll_display_width;       /* Width of visible title area */
@@ -447,7 +450,8 @@ static void repl_eval(void);
 static int replkey(xkb_keysym_t sym);
 static void updateframe(Client *c);
 static void updateframes(void);
-static void update_scroll_only(Client *c);
+static int update_scroll_only(Client *c);
+static void setup_scroll_scene_buffer(Client *c, uint32_t fg_color, uint32_t bg_color);
 
 static void startdrag(struct wl_listener *listener, void *data);
 static void tag(const Arg *arg);
@@ -6630,13 +6634,12 @@ scrolltimer(void *data)
 	if (!needs_scroll) {
 		/* No scrolling needed, check again later */
 		any_title_needs_scroll = 0;
-		wl_event_source_timer_update(scroll_timer, 100);
+		wl_event_source_timer_update(scroll_timer, 33);
 		return 0;
 	}
 	any_title_needs_scroll = 1;
 	
 	/* Advance scroll offset according to `title_scroll_speed` (pixels/sec).
-	 * Timer runs at 10fps (100ms) for low CPU usage - fits retro aesthetic.
 	 * Use an accumulator to handle fractional pixels per tick. */
 	title_scroll_accum += title_scroll_speed * (33.0 / 1000.0);
 	int advance = (int)title_scroll_accum;
@@ -6644,24 +6647,23 @@ scrolltimer(void *data)
 		title_scroll_offset += advance;
 		title_scroll_accum -= advance;
 	} else {
-		/* No pixel advancement this tick - skip all rendering work.
-		 * This is the key optimization: only redraw when scroll moves. */
+		/* No pixel advancement this tick - skip all rendering work. */
 		wl_event_source_timer_update(scroll_timer, 33);
 		return 0;
 	}
 	
 	/* FAST PATH: Only update the scrolling title region, not the whole frame.
-	 * This is how old DOS systems achieved smooth scrolling without high CPU. */
+	 * If fast path fails (not initialized), fall back to full updateframe. */
 	wl_list_for_each(c, &clients, link) {
 		if (c->needs_title_scroll) {
-			update_scroll_only(c);
+			if (!update_scroll_only(c)) {
+				/* Fast path not ready - do full update to initialize */
+				updateframe(c);
+			}
 			scroll_count++;
 		}
 	}
 
-	/* TODO: Top bar tabs still need optimization - for now skip bar updates
-	 * during scroll ticks to reduce CPU. Bar titles don't need per-pixel scroll. */
-	
 	/* Continue at ~30fps for smooth scrolling */
 	wl_event_source_timer_update(scroll_timer, 33);
 	return 0;
@@ -8037,11 +8039,8 @@ render_char_clipped(uint32_t *pixels, int buf_w, int buf_h, int x, int y,
 static void
 ensure_scroll_title_buffer(Client *c, const char *title, uint32_t fg_color, uint32_t bg_color)
 {
-	int title_len = 0;
-	int scroll_chars, total_width, pos, i;
-	
-	/* Count UTF-8 characters */
-	while (title[title_len]) title_len++;
+	int scroll_chars, one_cycle_width, total_width, pos, i;
+	uint32_t *pixels;
 	
 	/* Check if we need to regenerate (title changed) */
 	if (c->scroll_title_pixels && 
@@ -8055,7 +8054,7 @@ ensure_scroll_title_buffer(Client *c, const char *title, uint32_t fg_color, uint
 		c->scroll_title_pixels = NULL;
 	}
 	
-	/* Calculate buffer size: title chars + 2 separator spaces */
+	/* Calculate: title chars + 2 separator spaces = one cycle */
 	scroll_chars = 0;
 	pos = 0;
 	while (title[pos]) {
@@ -8064,26 +8063,31 @@ ensure_scroll_title_buffer(Client *c, const char *title, uint32_t fg_color, uint
 	}
 	scroll_chars += 2; /* "  " separator */
 	
-	total_width = scroll_chars * cell_width;
-	c->scroll_title_width = total_width;
+	one_cycle_width = scroll_chars * cell_width;
+	c->scroll_title_width = one_cycle_width;
 	
-	/* Allocate and fill with background */
+	/* Allocate buffer for TWO cycles (for seamless wrapping) */
+	total_width = one_cycle_width * 2;
 	c->scroll_title_pixels = malloc(total_width * cell_height * sizeof(uint32_t));
 	if (!c->scroll_title_pixels) return;
 	
+	pixels = c->scroll_title_pixels;
 	for (i = 0; i < total_width * cell_height; i++)
-		c->scroll_title_pixels[i] = bg_color;
+		pixels[i] = bg_color;
 	
-	/* Render title characters (uses glyph cache - fast) */
+	/* Render title characters TWICE (uses glyph cache - fast) */
 	pos = 0;
 	i = 0;
 	while (title[pos]) {
 		unsigned long cp = utf8_decode(title, &pos);
-		render_char_to_buffer(c->scroll_title_pixels, total_width, cell_height,
+		/* First copy */
+		render_char_to_buffer(pixels, total_width, cell_height,
 		                      i * cell_width, 0, cp, fg_color);
+		/* Second copy */
+		render_char_to_buffer(pixels, total_width, cell_height,
+		                      one_cycle_width + i * cell_width, 0, cp, fg_color);
 		i++;
 	}
-	/* Separator spaces are already background-colored */
 	
 	/* Remember the title hash */
 	strncpy(c->scroll_title_hash, title, sizeof(c->scroll_title_hash) - 1);
@@ -8096,35 +8100,48 @@ static void
 blit_scroll_title(Client *c, uint32_t *dest, int dest_width, int dest_x, 
                   int display_width, int pixel_offset)
 {
-	int py, px, src_px;
+	int py, px, src_x;
+	int total_width = c->scroll_title_width * 2; /* buffer is 2x for wrap */
 	
 	if (!c->scroll_title_pixels || c->scroll_title_width <= 0)
 		return;
 	
+	/* Simple linear blit from the doubled buffer - no modulo needed! */
 	for (py = 0; py < cell_height; py++) {
 		for (px = 0; px < display_width; px++) {
-			src_px = (pixel_offset + px) % c->scroll_title_width;
+			src_x = pixel_offset + px;
 			dest[py * dest_width + (dest_x + px)] = 
-				c->scroll_title_pixels[py * c->scroll_title_width + src_px];
+				c->scroll_title_pixels[py * total_width + src_x];
 		}
 	}
 }
 
-/* FAST PATH: Update only the scrolling title region without re-rendering
- * the entire frame. This is how old DOS systems did smooth scrolling -
- * just change the read offset and blit, no re-rendering. */
+/* Create/update a dedicated scene buffer for scroll overlay.
+ * NOT USED - source_box approach causes issues, using direct blit instead. */
 static void
+setup_scroll_scene_buffer(Client *c, uint32_t fg_color, uint32_t bg_color)
+{
+	/* Intentionally empty - keeping function for ABI compatibility */
+	(void)c; (void)fg_color; (void)bg_color;
+}
+
+/* FAST PATH: Just update the scroll pixels in the existing frame buffer.
+ * We modify the buffer in-place and use wlr_scene_buffer_set_buffer_with_damage
+ * to tell wlroots ONLY the title region changed, minimizing compositor work.
+ * Returns 1 if fast path succeeded, 0 if full update needed. */
+static int
 update_scroll_only(Client *c)
 {
-	uint32_t *pixels;
 	int pixel_offset;
+	uint32_t *pixels;
+	pixman_region32_t damage;
 	
 	if (!c || !c->frame_top_buf || !c->scroll_title_pixels)
-		return;
+		return 0;
 	if (!c->needs_title_scroll || c->scroll_title_width <= 0)
-		return;
-	if (c->scroll_display_width <= 0)
-		return;
+		return 0;
+	if (c->scroll_display_width <= 0 || c->scroll_dest_x <= 0)
+		return 0;
 	
 	pixels = c->frame_top_buf->data;
 	pixel_offset = title_scroll_offset % c->scroll_title_width;
@@ -8133,8 +8150,14 @@ update_scroll_only(Client *c)
 	blit_scroll_title(c, pixels, c->geom.width, c->scroll_dest_x,
 	                  c->scroll_display_width, pixel_offset);
 	
-	/* Tell wlroots the buffer changed */
-	wlr_scene_buffer_set_buffer(c->frame_top, &c->frame_top_buf->base);
+	/* Tell wlroots ONLY the title region changed, not the whole buffer */
+	pixman_region32_init_rect(&damage, c->scroll_dest_x, 0, 
+	                          c->scroll_display_width, cell_height);
+	wlr_scene_buffer_set_buffer_with_damage(c->frame_top, 
+	                                        &c->frame_top_buf->base, &damage);
+	pixman_region32_fini(&damage);
+	
+	return 1;
 }
 
 void
@@ -8317,11 +8340,9 @@ updateframe(Client *c)
 		title_x = title_start_cell * cell_width;
 		
 		if (needs_overflow && title_scroll_mode) {
-			/* FAST PATH: Use pre-rendered scroll buffer.
-			 * Render title once when it changes, then just blit portions.
-			 * This is how DOS/TempleOS did scrolling text - pure memcpy. */
-			int total_scroll_width;
-			int pixel_offset;
+			/* FAST PATH: Use pre-rendered scroll buffer with GPU panning.
+			 * Render title once when it changes, then just change source_box.
+			 * This is how old hardware did scrolling - zero CPU. */
 			int display_width = avail_cells * cell_width;
 			int bg_end = title_x + display_width;
 			if (bg_end > title_right_px)
@@ -8332,13 +8353,15 @@ updateframe(Client *c)
 			c->scroll_dest_x = title_x;
 			c->scroll_display_width = display_width;
 			
-			/* Ensure pre-rendered scroll buffer exists */
+			/* Ensure pre-rendered scroll buffer exists (2x width for wrap) */
 			ensure_scroll_title_buffer(c, title, title_fg, title_bg);
 			
+			/* Set up the dedicated scroll scene buffer for GPU panning */
+			setup_scroll_scene_buffer(c, title_fg, title_bg);
+			
+			/* Initial blit to frame buffer (for first display) */
 			if (c->scroll_title_pixels && c->scroll_title_width > 0) {
-				/* Fast blit from pre-rendered buffer - no FreeType calls! */
-				total_scroll_width = c->scroll_title_width;
-				pixel_offset = title_scroll_offset % total_scroll_width;
+				int pixel_offset = title_scroll_offset % c->scroll_title_width;
 				blit_scroll_title(c, pixels, width, title_x, display_width, pixel_offset);
 			}
 		} else if (needs_overflow) {

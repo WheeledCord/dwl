@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=TurboWM
+Comment=TurboWM dynamic tiling Wayland compositor
+Exec=tbwm
+Type=Application
+DesktopNames=tbwm
